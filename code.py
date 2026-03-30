@@ -1,5 +1,8 @@
 import os
+import csv
+import secrets
 from datetime import datetime
+from pathlib import Path
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -8,7 +11,7 @@ from openpyxl.utils import get_column_letter
 OUTPUT_DIR = r"C:\Users\hamza.zahid\OneDrive - mgapparel.com\Desktop\Budget Mails\Generic"
 OUTPUT_FILE = "Budget_FY2027_MGA.xlsx"  # Generate valid .xlsx; save as .xlsm after importing VBA
 
-MASTER_PASSWORD = "MGA@Master2027"  # Change this!
+PASSWORD_CSV_PATH = Path(__file__).with_name("DepartmentPasswords_CONFIDENTIAL.csv")
 
 DEPARTMENTS = [
     "ACCOUNTS",
@@ -39,35 +42,58 @@ DEPARTMENTS = [
     "DSBA",
 ]
 
-# Unique password per department — customize these before sending!
-DEPT_PASSWORDS = {
-    "ACCOUNTS":                              "ACCOUNTS@2027",
-    "AUDIT":                                 "AUDIT@2027",
-    "BUSINESS AFFAIRS, SUSTAINABILITY, CSR":  "BASC@2027",
-    "PD & SAMPLING":                          "PDSAM@2027",
-    "MARKETING & MERCHANDIZING":              "MKTM@2027",
-    "RESEARCH & DESIGN":                      "RND@2027",
-    "FABRIC SOURCING":                        "FABSRC@2027",
-    "EXPORT & LOGISTICS":                     "EXPLOG@2027",
-    "MATERIAL MANAGEMENT & CONTROL":          "MMC@2027",
-    "ENGINEERING & UTILITIES":                "ENGUT@2027",
-    "ADMINISTRATION":                         "ADMIN@2027",
-    "COMPLIANCE, HSE & IR":                   "COMP@2027",
-    "STORES":                                 "STOR@2027",
-    "HUMAN RESOURCES":                        "HR@2027",
-    "CUTTING & EMBROIDERY":                   "CUTEMB@2027",
-    "STITCHING":                              "STITCH@2027",
-    "WASHING & DRY PROCESS":                  "WASH@2027",
-    "FINISHING":                              "FINISH@2027",
-    "PPC & WIP":                              "PPCWIP@2027",
-    "IE & PROCESS IMPROVEMENT":               "IEPI@2027",
-    "MAINTENANCE":                            "MAINT@2027",
-    "MIS & IT":                               "MISIT@2027",
-    "QUALITY ASSURANCE":                      "QA@2027",
-    "QUALITY CONTROL":                        "QC@2027",
-    "R61 OPERATIONS":                         "R61OP@2027",
-    "DSBA":                                   "DSBA@2027",
-}
+
+def _random_password(length: int = 18) -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def _write_password_csv(master_password: str, dept_passwords: dict) -> None:
+    PASSWORD_CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(PASSWORD_CSV_PATH, "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["Department", "Password"])
+        w.writerow(["[MASTER]", master_password])
+        for dept in DEPARTMENTS:
+            w.writerow([dept, dept_passwords[dept]])
+
+
+def load_passwords() -> tuple[str, dict]:
+    if not PASSWORD_CSV_PATH.exists():
+        master_password = _random_password(24)
+        dept_passwords = {dept: _random_password(20) for dept in DEPARTMENTS}
+        _write_password_csv(master_password, dept_passwords)
+        print("Created DepartmentPasswords_CONFIDENTIAL.csv with random passwords:")
+        print(f"  {PASSWORD_CSV_PATH}")
+        return master_password, dept_passwords
+
+    dept_passwords: dict[str, str] = {}
+    master_password = ""
+    with open(PASSWORD_CSV_PATH, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            dept = (row.get("Department") or "").strip().strip("\ufeff")
+            pw = (row.get("Password") or "").strip()
+            if not dept or not pw:
+                continue
+            if dept == "[MASTER]":
+                master_password = pw
+            else:
+                dept_passwords[dept.strip('"')] = pw
+
+    missing = [d for d in DEPARTMENTS if d not in dept_passwords]
+    if missing:
+        raise RuntimeError(
+            "Missing passwords for departments in DepartmentPasswords_CONFIDENTIAL.csv: "
+            + ", ".join(missing)
+        )
+    if not master_password:
+        raise RuntimeError("Missing [MASTER] password in DepartmentPasswords_CONFIDENTIAL.csv")
+
+    return master_password, dept_passwords
+
+
+MASTER_PASSWORD, DEPT_PASSWORDS = load_passwords()
 
 MONTHS = ["Jul-26","Aug-26","Sep-26","Oct-26","Nov-26","Dec-26",
           "Jan-27","Feb-27","Mar-27","Apr-27","May-27","Jun-27"]
