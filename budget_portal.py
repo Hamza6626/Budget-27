@@ -48,6 +48,7 @@ ALLOWED_ATTACHMENT_TYPES = {
 def default_app_settings() -> dict:
     return {
         "edit_locked": False,
+        "view_locked": False,
         "locked_by": None,
         "locked_at": None,
         "updated_at": None,
@@ -303,6 +304,7 @@ def load_app_settings() -> dict:
             return defaults
         merged = {**defaults, **raw}
         merged["edit_locked"] = bool(merged.get("edit_locked", False))
+        merged["view_locked"] = bool(merged.get("view_locked", False))
         return merged
 
     conn = sqlite3.connect(DB_PATH)
@@ -322,6 +324,7 @@ def load_app_settings() -> dict:
         return defaults
     merged = {**defaults, **raw}
     merged["edit_locked"] = bool(merged.get("edit_locked", False))
+    merged["view_locked"] = bool(merged.get("view_locked", False))
     return merged
 
 
@@ -788,6 +791,7 @@ def app_view(auth_map: dict, master_pw: str) -> None:
 
     settings = load_app_settings()
     edit_locked = bool(settings.get("edit_locked", False))
+    view_locked = bool(settings.get("view_locked", False))
 
     with st.sidebar:
         st.write(f"Role: {st.session_state.role}")
@@ -795,8 +799,26 @@ def app_view(auth_map: dict, master_pw: str) -> None:
             st.write(f"Department: {st.session_state.department}")
             if edit_locked:
                 st.warning("Editing is locked")
+            if view_locked:
+                st.error("Viewing is locked")
 
         if st.session_state.role == "master":
+            new_view_locked = st.toggle(
+                "Block department viewing",
+                value=view_locked,
+                help="When ON, departments cannot view any data or download files.",
+            )
+            if new_view_locked != view_locked:
+                save_app_settings(
+                    {
+                        **settings,
+                        "view_locked": bool(new_view_locked),
+                        "locked_by": "MASTER",
+                        "locked_at": datetime.now().isoformat(timespec="seconds") if new_view_locked else settings.get("locked_at"),
+                    }
+                )
+                st.rerun()
+
             new_locked = st.toggle(
                 "Lock editing for departments",
                 value=edit_locked,
@@ -822,6 +844,12 @@ def app_view(auth_map: dict, master_pw: str) -> None:
 
     if st.session_state.role == "department":
         dept = st.session_state.department
+
+        if view_locked:
+            st.title(APP_TITLE)
+            st.error("Access is temporarily disabled by MASTER. Please try again later.")
+            return
+
         work_key = f"work_payload_{dept}"
         if work_key not in st.session_state:
             st.session_state[work_key] = load_payload(dept)
