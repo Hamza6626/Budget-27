@@ -162,9 +162,38 @@ def _supabase_upsert_payload(department: str, payload: dict, updated_at: str) ->
         raise RuntimeError(f"Supabase write failed: {resp.status_code} {resp.text[:200]}")
 
 
+def _load_auth_from_secrets() -> tuple[dict, str] | None:
+    try:
+        secrets = st.secrets
+    except Exception:
+        return None
+
+    master_password = str(secrets.get("MASTER_PASSWORD", "")).strip()
+    dept_block = secrets.get("DEPARTMENT_PASSWORDS", {})
+    try:
+        dept_items = dict(dept_block).items()
+    except Exception:
+        dept_items = []
+
+    dept_passwords = {}
+    for dept, pw in dept_items:
+        d = normalize_name(str(dept))
+        p = str(pw).strip()
+        if d and p:
+            dept_passwords[d] = p
+
+    if master_password and dept_passwords:
+        return dept_passwords, master_password
+    return None
+
+
 def load_auth_map() -> tuple[dict, str]:
+    from_secrets = _load_auth_from_secrets()
+    if from_secrets:
+        return from_secrets
+
     if not PASSWORD_CSV.exists():
-        st.error("DepartmentPasswords_CONFIDENTIAL.csv not found in app folder.")
+        st.error("No auth source found. Configure Streamlit Secrets or provide DepartmentPasswords_CONFIDENTIAL.csv")
         st.stop()
 
     df = pd.read_csv(PASSWORD_CSV)

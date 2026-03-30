@@ -10,3 +10,5 @@ Budget_FY*.xlsx
 Entertainment.xlsx
 SETUP_INSTRUCTIONS.txt
 ImportThisVBA_OneTime.bas
+.streamlit/secrets.toml
+DepartmentPasswords_CONFIDENTIAL.csv

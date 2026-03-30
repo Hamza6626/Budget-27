@@ -13,20 +13,21 @@ This portal replaces VBA-based sheet hiding with password-based web access.
 ## Files
 
 - `budget_portal.py`
-- `requirements_budget_portal.txt`
-- `DepartmentPasswords_CONFIDENTIAL.csv`
+- `requirements.txt`
+- `.streamlit/secrets.toml.example`
+- `DepartmentPasswords_CONFIDENTIAL.csv` (optional local fallback only)
 
 ## Run locally (free)
 
 ```powershell
-pip install -r requirements_budget_portal.txt
+pip install -r requirements.txt
 streamlit run budget_portal.py
 ```
 
 ## Access model
 
-- Department passwords are loaded from `DepartmentPasswords_CONFIDENTIAL.csv`
-- Master password is the `[MASTER]` row in that same CSV
+- First priority: Streamlit Secrets (`MASTER_PASSWORD` and `[DEPARTMENT_PASSWORDS]`)
+- Fallback (local only): `DepartmentPasswords_CONFIDENTIAL.csv`
 
 ## Notes
 
@@ -50,11 +51,13 @@ create table if not exists public.budget_entries (
 );
 ```
 
-3. In Streamlit app settings (Secrets/Environment Variables), add:
+3. In Streamlit app settings -> Secrets, add values from `.streamlit/secrets.toml.example`:
 
-- `SUPABASE_URL` = your Supabase project URL (for example `https://xxxx.supabase.co`)
-- `SUPABASE_KEY` = your Supabase anon key (or service role key)
+- `MASTER_PASSWORD`
+- `[DEPARTMENT_PASSWORDS]` map for all departments
+- `SUPABASE_URL`
+- `SUPABASE_KEY`
 
 4. Redeploy/restart app.
 
-When both variables are present, the app automatically uses Supabase and data stays available across restarts and Git pushes.
+When `SUPABASE_URL` and `SUPABASE_KEY` are present, the app uses Supabase and data stays available across restarts and Git pushes.
