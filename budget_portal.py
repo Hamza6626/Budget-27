@@ -18,7 +18,17 @@ APP_TITLE = "MGA Budget Portal FY2026-27"
 DB_PATH = Path(__file__).with_name("budget_data.db")
 PASSWORD_CSV = Path(__file__).with_name("DepartmentPasswords_CONFIDENTIAL.csv")
 APP_SETTINGS_KEY = "__APP_SETTINGS__"
-LOGO_PATH = Path(__file__).with_name("mg_apparel_logo.png")
+LOGO_CANDIDATES = [
+    "mg_apparel_logo.png",
+    "mg_apparel_logo.jpg",
+    "mg_apparel_logo.jpeg",
+    "MG Apparel Logo.png",
+    "MG Apparel Logo.jpg",
+    "MG Apparel Logo.jpeg",
+    "logo.png",
+    "logo.jpg",
+    "logo.jpeg",
+]
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
 USE_SUPABASE = bool(SUPABASE_URL and SUPABASE_KEY)
@@ -67,8 +77,11 @@ def _get_logo_source() -> str | Path | None:
         logo_url = ""
     if logo_url:
         return logo_url
-    if LOGO_PATH.exists():
-        return LOGO_PATH
+
+    for name in LOGO_CANDIDATES:
+        candidate = Path(__file__).with_name(name)
+        if candidate.exists():
+            return candidate
     return None
 
 
