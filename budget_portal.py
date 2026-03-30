@@ -55,6 +55,8 @@ ALLOWED_ATTACHMENT_TYPES = {
     "image/jpeg",
 }
 
+TRAVEL_COST_KEYS = ["Travelling Fare", "Food", "Lodging"]
+
 
 def default_app_settings() -> dict:
     return {
@@ -103,14 +105,32 @@ def month_map(default: float = 0.0) -> dict:
     return {m: float(default) for m in MONTHS}
 
 
+def travel_breakdown_default() -> dict:
+    return {k: month_map(0.0) for k in TRAVEL_COST_KEYS}
+
+
+def ensure_travel_breakdown(item: dict) -> None:
+    tb = item.get("travel_breakdown")
+    if not isinstance(tb, dict):
+        tb = travel_breakdown_default()
+        item["travel_breakdown"] = tb
+
+    for k in TRAVEL_COST_KEYS:
+        tb.setdefault(k, month_map(0.0))
+        for m in MONTHS:
+            tb[k][m] = _to_float(tb[k].get(m, 0.0))
+
+
 def create_item(name: str, kind: str = "units_rate", item_id: str | None = None) -> dict:
     return {
         "id": item_id or uuid.uuid4().hex,
         "name": name,
+        "description": "",
         "kind": kind,
         "units": month_map(0.0),
         "rate": month_map(0.0),
         "amount": month_map(0.0),
+        "travel_breakdown": None,
         "benefit": month_map(0.0),
         "comment": "",
         "attachments": [],
@@ -284,13 +304,33 @@ def migrate_payload(payload: dict) -> dict:
             for item in items:
                 item.setdefault("id", uuid.uuid4().hex)
                 item.setdefault("name", "New Subhead")
+                item.setdefault("description", "")
                 item.setdefault("kind", "units_rate")
                 item.setdefault("units", month_map(0.0))
                 item.setdefault("rate", month_map(0.0))
                 item.setdefault("amount", month_map(0.0))
+                item.setdefault("travel_breakdown", None)
                 item.setdefault("benefit", month_map(0.0))
                 item.setdefault("comment", "")
                 item.setdefault("attachments", [])
+
+                if is_travel_section(section):
+                    if not isinstance(item.get("travel_breakdown"), dict):
+                        existing_costs = []
+                        if item.get("kind") == "amount":
+                            existing_costs = [_to_float(item["amount"].get(m, 0.0)) for m in MONTHS]
+                        else:
+                            units = [_to_float(item["units"].get(m, 0.0)) for m in MONTHS]
+                            rate = [_to_float(item["rate"].get(m, 0.0)) for m in MONTHS]
+                            existing_costs = [units[i] * rate[i] for i in range(len(MONTHS))]
+
+                        item["travel_breakdown"] = travel_breakdown_default()
+                        for i, m in enumerate(MONTHS):
+                            item["travel_breakdown"]["Travelling Fare"][m] = _to_float(existing_costs[i] if i < len(existing_costs) else 0.0)
+
+                    ensure_travel_breakdown(item)
+                    item["kind"] = "travel_breakdown"
+
                 for m in MONTHS:
                     item["units"][m] = _to_float(item["units"].get(m, 0.0))
                     item["rate"][m] = _to_float(item["rate"].get(m, 0.0))
@@ -321,6 +361,13 @@ def migrate_payload(payload: dict) -> dict:
                 for m in MONTHS:
                     item["units"][m] = _to_float(old_rows.get(units_key, {}).get(m, 0.0))
                     item["rate"][m] = _to_float(old_rows.get(rate_key, {}).get(m, 0.0))
+
+            if is_travel_section(section):
+                existing_costs = item_cost_by_month(item)
+                item["travel_breakdown"] = travel_breakdown_default()
+                for i, m in enumerate(MONTHS):
+                    item["travel_breakdown"]["Travelling Fare"][m] = _to_float(existing_costs[i] if i < len(existing_costs) else 0.0)
+                item["kind"] = "travel_breakdown"
 
             item["comment"] = str(old_comments.get(comment_key, ""))
 
@@ -444,6 +491,16 @@ def is_travel_section(section: str) -> bool:
 
 
 def item_cost_by_month(item: dict) -> list[float]:
+    tb = item.get("travel_breakdown")
+    if isinstance(tb, dict):
+        # Travel subheads: monthly cost is sum of the breakdown rows.
+        out: list[float] = []
+        for m in MONTHS:
+            total = 0.0
+            for k in TRAVEL_COST_KEYS:
+                total += _to_float(tb.get(k, {}).get(m, 0.0))
+            out.append(total)
+        return out
     if item.get("kind") == "amount":
         return [_to_float(item["amount"].get(m, 0.0)) for m in MONTHS]
     units = [_to_float(item["units"].get(m, 0.0)) for m in MONTHS]
@@ -535,7 +592,7 @@ def workbook_bytes(all_payloads: dict, departments: list[str], include_summary: 
     for dept in departments:
         payload = all_payloads[dept]
         ws = wb.create_sheet(dept[:31])
-        headers = ["Section", "Subhead", "Metric"] + MONTHS + ["FY Total", "FY Benefit", "ROI %", "Support Docs", "Comment"]
+        headers = ["Section", "Subhead", "Description", "Metric"] + MONTHS + ["FY Total", "FY Benefit", "ROI %", "Support Docs", "Comment"]
         for col_idx, h in enumerate(headers, start=1):
             c = ws.cell(row=1, column=col_idx, value=h)
             c.font = Font(bold=True, color="FFFFFF")
@@ -547,22 +604,51 @@ def workbook_bytes(all_payloads: dict, departments: list[str], include_summary: 
             sec_name = section.split(". ", 1)[1] if ". " in section else section
             for item in payload.get("sections", {}).get(section, []):
                 comment = item.get("comment", "")
+                desc = item.get("description", "")
                 is_travel = is_travel_section(section)
                 fy_benefit = item_fy_benefit(item) if is_travel else 0.0
                 fy_roi = item_fy_roi(item) if is_travel else None
+
+                # Travel subheads: export breakdown rows + total.
+                tb = item.get("travel_breakdown") if is_travel else None
+                if is_travel and isinstance(tb, dict):
+                    ensure_travel_breakdown(item)
+                    breakdown_rows = []
+                    for k in TRAVEL_COST_KEYS:
+                        breakdown_rows.append((k, [_to_float(tb.get(k, {}).get(m, 0.0)) for m in MONTHS]))
+                    breakdown_rows.append(("Total", item_cost_by_month(item)))
+
+                    for metric_name, vals in breakdown_rows:
+                        ws.cell(row=row_idx, column=1, value=sec_name)
+                        ws.cell(row=row_idx, column=2, value=item.get("name", "Subhead"))
+                        ws.cell(row=row_idx, column=3, value=desc)
+                        ws.cell(row=row_idx, column=4, value=metric_name)
+                        for i, v in enumerate(vals, start=5):
+                            ws.cell(row=row_idx, column=i, value=round(v, 2)).number_format = '#,##0.00;(#,##0.00);"-"'
+                        fy_total_col = 5 + len(MONTHS)
+                        ws.cell(row=row_idx, column=fy_total_col, value=round(sum(vals), 2)).number_format = '#,##0.00;(#,##0.00);"-"'
+                        if metric_name == "Total":
+                            ws.cell(row=row_idx, column=fy_total_col + 1, value=round(fy_benefit, 2) if is_travel else "")
+                            ws.cell(row=row_idx, column=fy_total_col + 2, value=round(fy_roi, 2) if fy_roi is not None else "")
+                            ws.cell(row=row_idx, column=fy_total_col + 3, value="; ".join([a.get("name", "") for a in item.get("attachments", [])]))
+                            ws.cell(row=row_idx, column=fy_total_col + 4, value=comment)
+                        row_idx += 1
+                    continue
 
                 if item.get("kind") == "amount":
                     vals = item_cost_by_month(item)
                     ws.cell(row=row_idx, column=1, value=sec_name)
                     ws.cell(row=row_idx, column=2, value=item.get("name", "Subhead"))
-                    ws.cell(row=row_idx, column=3, value="Amount")
-                    for i, v in enumerate(vals, start=4):
+                    ws.cell(row=row_idx, column=3, value=desc)
+                    ws.cell(row=row_idx, column=4, value="Amount")
+                    for i, v in enumerate(vals, start=5):
                         ws.cell(row=row_idx, column=i, value=round(v, 2)).number_format = '#,##0.00;(#,##0.00);"-"'
-                    ws.cell(row=row_idx, column=16, value=round(sum(vals), 2)).number_format = '#,##0.00;(#,##0.00);"-"'
-                    ws.cell(row=row_idx, column=17, value=round(fy_benefit, 2) if is_travel else "")
-                    ws.cell(row=row_idx, column=18, value=round(fy_roi, 2) if fy_roi is not None else "")
-                    ws.cell(row=row_idx, column=19, value="; ".join([a.get("name", "") for a in item.get("attachments", [])]))
-                    ws.cell(row=row_idx, column=20, value=comment)
+                    fy_total_col = 5 + len(MONTHS)
+                    ws.cell(row=row_idx, column=fy_total_col, value=round(sum(vals), 2)).number_format = '#,##0.00;(#,##0.00);"-"'
+                    ws.cell(row=row_idx, column=fy_total_col + 1, value=round(fy_benefit, 2) if is_travel else "")
+                    ws.cell(row=row_idx, column=fy_total_col + 2, value=round(fy_roi, 2) if fy_roi is not None else "")
+                    ws.cell(row=row_idx, column=fy_total_col + 3, value="; ".join([a.get("name", "") for a in item.get("attachments", [])]))
+                    ws.cell(row=row_idx, column=fy_total_col + 4, value=comment)
                     row_idx += 1
                 else:
                     units = [_to_float(item["units"].get(m, 0.0)) for m in MONTHS]
@@ -571,20 +657,35 @@ def workbook_bytes(all_payloads: dict, departments: list[str], include_summary: 
                     for metric_name, vals in [("Units", units), ("Rate", rate), ("Value", value)]:
                         ws.cell(row=row_idx, column=1, value=sec_name)
                         ws.cell(row=row_idx, column=2, value=item.get("name", "Subhead"))
-                        ws.cell(row=row_idx, column=3, value=metric_name)
-                        for i, v in enumerate(vals, start=4):
+                        ws.cell(row=row_idx, column=3, value=desc)
+                        ws.cell(row=row_idx, column=4, value=metric_name)
+                        for i, v in enumerate(vals, start=5):
                             ws.cell(row=row_idx, column=i, value=round(v, 2)).number_format = '#,##0.00;(#,##0.00);"-"'
-                        ws.cell(row=row_idx, column=16, value=round(sum(vals), 2)).number_format = '#,##0.00;(#,##0.00);"-"'
+                        fy_total_col = 5 + len(MONTHS)
+                        ws.cell(row=row_idx, column=fy_total_col, value=round(sum(vals), 2)).number_format = '#,##0.00;(#,##0.00);"-"'
                         if metric_name == "Value" and is_travel:
-                            ws.cell(row=row_idx, column=17, value=round(fy_benefit, 2))
-                            ws.cell(row=row_idx, column=18, value=round(fy_roi, 2) if fy_roi is not None else "")
-                            ws.cell(row=row_idx, column=19, value="; ".join([a.get("name", "") for a in item.get("attachments", [])]))
-                            ws.cell(row=row_idx, column=20, value=comment)
+                            ws.cell(row=row_idx, column=fy_total_col + 1, value=round(fy_benefit, 2))
+                            ws.cell(row=row_idx, column=fy_total_col + 2, value=round(fy_roi, 2) if fy_roi is not None else "")
+                            ws.cell(row=row_idx, column=fy_total_col + 3, value="; ".join([a.get("name", "") for a in item.get("attachments", [])]))
+                            ws.cell(row=row_idx, column=fy_total_col + 4, value=comment)
                         row_idx += 1
 
-        for col in [1, 2, 3, 19, 20]:
-            ws.column_dimensions[chr(64 + col)].width = 24 if col in [1, 2] else 16
-        for col_offset in range(4, 19):
+        # Column widths
+        fy_total_col = 5 + len(MONTHS)
+        support_docs_col = fy_total_col + 3
+        comment_col = fy_total_col + 4
+
+        for col in [1, 2, 3, 4, support_docs_col, comment_col]:
+            if col in [1, 2]:
+                ws.column_dimensions[chr(64 + col)].width = 24
+            elif col == 3:
+                ws.column_dimensions[chr(64 + col)].width = 28
+            elif col == 4:
+                ws.column_dimensions[chr(64 + col)].width = 16
+            else:
+                ws.column_dimensions[chr(64 + col)].width = 18
+
+        for col_offset in range(5, support_docs_col):
             ws.column_dimensions[chr(64 + col_offset)].width = 12
 
     output = BytesIO()
@@ -620,6 +721,9 @@ def render_department_form(department: str, payload: dict, edit_locked: bool) ->
 
             for idx, item in enumerate(section_items):
                 item_id = item["id"]
+                if is_travel_section(section):
+                    item["kind"] = "travel_breakdown"
+                    ensure_travel_breakdown(item)
 
                 st.markdown(f"Subhead #{idx + 1}")
                 c1, c2, c3 = st.columns([2, 1.2, 0.8])
@@ -629,58 +733,96 @@ def render_department_form(department: str, payload: dict, edit_locked: bool) ->
                     key=f"name_{department}_{item_id}",
                     disabled=edit_locked,
                 )
-                item["kind"] = c2.selectbox(
-                    "Field Type",
-                    options=["units_rate", "amount"],
-                    format_func=lambda x: "Units x Rate" if x == "units_rate" else "Direct Amount",
-                    index=0 if item.get("kind") == "units_rate" else 1,
-                    key=f"kind_{department}_{item_id}",
-                    disabled=edit_locked,
-                )
+
+                if is_travel_section(section):
+                    c2.caption("Travel cost = Fare + Food + Lodging")
+                else:
+                    item["kind"] = c2.selectbox(
+                        "Field Type",
+                        options=["units_rate", "amount"],
+                        format_func=lambda x: "Units x Rate" if x == "units_rate" else "Direct Amount",
+                        index=0 if item.get("kind") == "units_rate" else 1,
+                        key=f"kind_{department}_{item_id}",
+                        disabled=edit_locked,
+                    )
                 if c3.button("Delete", key=f"del_{department}_{item_id}", disabled=edit_locked):
                     to_delete.append((section, item_id))
 
-                if item["kind"] == "amount":
-                    amount_df = pd.DataFrame(
-                        [[_to_float(item["amount"].get(m, 0.0)) for m in MONTHS]],
-                        index=["Amount"],
+                item["description"] = st.text_area(
+                    "Description",
+                    value=item.get("description", ""),
+                    key=f"desc_{department}_{item_id}",
+                    disabled=edit_locked,
+                    height=72,
+                )
+
+                if is_travel_section(section):
+                    tb = item.get("travel_breakdown")
+                    breakdown_df = pd.DataFrame(
+                        [[_to_float(tb.get(k, {}).get(m, 0.0)) for m in MONTHS] for k in TRAVEL_COST_KEYS],
+                        index=TRAVEL_COST_KEYS,
                         columns=MONTHS,
                     )
+
                     if edit_locked:
-                        st.dataframe(amount_df, use_container_width=True)
+                        st.dataframe(breakdown_df, use_container_width=True)
                     else:
-                        edited_amount = st.data_editor(
-                            amount_df,
-                            key=f"amt_{department}_{item_id}",
+                        edited_tb = st.data_editor(
+                            breakdown_df,
+                            key=f"tb_{department}_{item_id}",
                             use_container_width=True,
                             num_rows="fixed",
                         )
-                        item["amount"] = _editor_to_month_map(edited_amount, "Amount")
-                else:
-                    input_df = pd.DataFrame(
-                        [
-                            [_to_float(item["units"].get(m, 0.0)) for m in MONTHS],
-                            [_to_float(item["rate"].get(m, 0.0)) for m in MONTHS],
-                        ],
-                        index=["Units", "Rate"],
-                        columns=MONTHS,
-                    )
-                    if edit_locked:
-                        st.dataframe(input_df, use_container_width=True)
-                    else:
-                        edited_ur = st.data_editor(
-                            input_df,
-                            key=f"ur_{department}_{item_id}",
-                            use_container_width=True,
-                            num_rows="fixed",
-                        )
-                        item["units"] = _editor_to_month_map(edited_ur, "Units")
-                        item["rate"] = _editor_to_month_map(edited_ur, "Rate")
+                        for k in TRAVEL_COST_KEYS:
+                            item["travel_breakdown"][k] = _editor_to_month_map(edited_tb, k)
+
                     calc_vals = item_cost_by_month(item)
                     st.dataframe(
-                        pd.DataFrame([calc_vals], index=["Value (auto)"], columns=MONTHS),
+                        pd.DataFrame([calc_vals], index=["Total (auto)"], columns=MONTHS),
                         use_container_width=True,
                     )
+                else:
+                    if item["kind"] == "amount":
+                        amount_df = pd.DataFrame(
+                            [[_to_float(item["amount"].get(m, 0.0)) for m in MONTHS]],
+                            index=["Amount"],
+                            columns=MONTHS,
+                        )
+                        if edit_locked:
+                            st.dataframe(amount_df, use_container_width=True)
+                        else:
+                            edited_amount = st.data_editor(
+                                amount_df,
+                                key=f"amt_{department}_{item_id}",
+                                use_container_width=True,
+                                num_rows="fixed",
+                            )
+                            item["amount"] = _editor_to_month_map(edited_amount, "Amount")
+                    else:
+                        input_df = pd.DataFrame(
+                            [
+                                [_to_float(item["units"].get(m, 0.0)) for m in MONTHS],
+                                [_to_float(item["rate"].get(m, 0.0)) for m in MONTHS],
+                            ],
+                            index=["Units", "Rate"],
+                            columns=MONTHS,
+                        )
+                        if edit_locked:
+                            st.dataframe(input_df, use_container_width=True)
+                        else:
+                            edited_ur = st.data_editor(
+                                input_df,
+                                key=f"ur_{department}_{item_id}",
+                                use_container_width=True,
+                                num_rows="fixed",
+                            )
+                            item["units"] = _editor_to_month_map(edited_ur, "Units")
+                            item["rate"] = _editor_to_month_map(edited_ur, "Rate")
+                        calc_vals = item_cost_by_month(item)
+                        st.dataframe(
+                            pd.DataFrame([calc_vals], index=["Value (auto)"], columns=MONTHS),
+                            use_container_width=True,
+                        )
 
                 item["comment"] = st.text_input(
                     "Comment / Assumption",
