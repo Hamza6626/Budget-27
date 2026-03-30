@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite
+*.sqlite3
+*.xlsm
+Budget_FY*.xlsx
+Entertainment.xlsx
+SETUP_INSTRUCTIONS.txt
+ImportThisVBA_OneTime.bas
