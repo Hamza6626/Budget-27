@@ -17,6 +17,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 APP_TITLE = "MGA Budget Portal FY2026-27"
 DB_PATH = Path(__file__).with_name("budget_data.db")
 PASSWORD_CSV = Path(__file__).with_name("DepartmentPasswords_CONFIDENTIAL.csv")
+APP_SETTINGS_KEY = "__APP_SETTINGS__"
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
 USE_SUPABASE = bool(SUPABASE_URL and SUPABASE_KEY)
@@ -42,6 +43,15 @@ ALLOWED_ATTACHMENT_TYPES = {
     "image/png",
     "image/jpeg",
 }
+
+
+def default_app_settings() -> dict:
+    return {
+        "edit_locked": False,
+        "locked_by": None,
+        "locked_at": None,
+        "updated_at": None,
+    }
 
 
 def normalize_name(name: str) -> str:
@@ -277,6 +287,67 @@ def migrate_payload(payload: dict) -> dict:
     return new_payload
 
 
+def load_app_settings() -> dict:
+    defaults = default_app_settings()
+
+    if USE_SUPABASE:
+        raw = _supabase_get_payload(APP_SETTINGS_KEY)
+        if not raw:
+            return defaults
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                return defaults
+        if not isinstance(raw, dict):
+            return defaults
+        merged = {**defaults, **raw}
+        merged["edit_locked"] = bool(merged.get("edit_locked", False))
+        return merged
+
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT payload_json FROM budget_entries WHERE department = ?", (APP_SETTINGS_KEY,)
+    ).fetchone()
+    conn.close()
+
+    if not row:
+        return defaults
+
+    try:
+        raw = json.loads(row[0])
+    except Exception:
+        return defaults
+    if not isinstance(raw, dict):
+        return defaults
+    merged = {**defaults, **raw}
+    merged["edit_locked"] = bool(merged.get("edit_locked", False))
+    return merged
+
+
+def save_app_settings(settings: dict) -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    payload = {**default_app_settings(), **(settings or {})}
+    payload["updated_at"] = now
+
+    if USE_SUPABASE:
+        _supabase_upsert_payload(APP_SETTINGS_KEY, payload, now)
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """
+        INSERT INTO budget_entries (department, payload_json, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(department)
+        DO UPDATE SET payload_json=excluded.payload_json, updated_at=excluded.updated_at
+        """,
+        (APP_SETTINGS_KEY, json.dumps(payload), now),
+    )
+    conn.commit()
+    conn.close()
+
+
 def save_payload(department: str, payload: dict) -> None:
     now = datetime.now().isoformat(timespec="seconds")
     payload["updated_at"] = now
@@ -482,9 +553,12 @@ def _editor_to_month_map(df: pd.DataFrame, row_name: str) -> dict:
     return {m: _to_float(df.loc[row_name, m]) for m in MONTHS}
 
 
-def render_department_form(department: str, payload: dict) -> dict:
+def render_department_form(department: str, payload: dict, edit_locked: bool) -> dict:
     st.subheader(f"Department: {department}")
-    st.caption("Users can add/edit subheads and choose calculation type. Travel subheads include ROI.")
+    if edit_locked:
+        st.warning("Editing is locked by MASTER. You can view/download, but cannot change or save data.")
+    else:
+        st.caption("Users can add/edit subheads and choose calculation type. Travel subheads include ROI.")
 
     to_delete = []
 
@@ -494,7 +568,7 @@ def render_department_form(department: str, payload: dict) -> dict:
 
             add_col, _ = st.columns([1, 3])
             with add_col:
-                if st.button("Add Subhead", key=f"add_{department}_{section}"):
+                if st.button("Add Subhead", key=f"add_{department}_{section}", disabled=edit_locked):
                     section_items.append(create_item("New Subhead", "units_rate"))
                     st.rerun()
 
@@ -510,6 +584,7 @@ def render_department_form(department: str, payload: dict) -> dict:
                     "Subhead Name",
                     value=item.get("name", "New Subhead"),
                     key=f"name_{department}_{item_id}",
+                    disabled=edit_locked,
                 )
                 item["kind"] = c2.selectbox(
                     "Field Type",
@@ -517,8 +592,9 @@ def render_department_form(department: str, payload: dict) -> dict:
                     format_func=lambda x: "Units x Rate" if x == "units_rate" else "Direct Amount",
                     index=0 if item.get("kind") == "units_rate" else 1,
                     key=f"kind_{department}_{item_id}",
+                    disabled=edit_locked,
                 )
-                if c3.button("Delete", key=f"del_{department}_{item_id}"):
+                if c3.button("Delete", key=f"del_{department}_{item_id}", disabled=edit_locked):
                     to_delete.append((section, item_id))
 
                 if item["kind"] == "amount":
@@ -527,13 +603,16 @@ def render_department_form(department: str, payload: dict) -> dict:
                         index=["Amount"],
                         columns=MONTHS,
                     )
-                    edited_amount = st.data_editor(
-                        amount_df,
-                        key=f"amt_{department}_{item_id}",
-                        use_container_width=True,
-                        num_rows="fixed",
-                    )
-                    item["amount"] = _editor_to_month_map(edited_amount, "Amount")
+                    if edit_locked:
+                        st.dataframe(amount_df, use_container_width=True)
+                    else:
+                        edited_amount = st.data_editor(
+                            amount_df,
+                            key=f"amt_{department}_{item_id}",
+                            use_container_width=True,
+                            num_rows="fixed",
+                        )
+                        item["amount"] = _editor_to_month_map(edited_amount, "Amount")
                 else:
                     input_df = pd.DataFrame(
                         [
@@ -543,14 +622,17 @@ def render_department_form(department: str, payload: dict) -> dict:
                         index=["Units", "Rate"],
                         columns=MONTHS,
                     )
-                    edited_ur = st.data_editor(
-                        input_df,
-                        key=f"ur_{department}_{item_id}",
-                        use_container_width=True,
-                        num_rows="fixed",
-                    )
-                    item["units"] = _editor_to_month_map(edited_ur, "Units")
-                    item["rate"] = _editor_to_month_map(edited_ur, "Rate")
+                    if edit_locked:
+                        st.dataframe(input_df, use_container_width=True)
+                    else:
+                        edited_ur = st.data_editor(
+                            input_df,
+                            key=f"ur_{department}_{item_id}",
+                            use_container_width=True,
+                            num_rows="fixed",
+                        )
+                        item["units"] = _editor_to_month_map(edited_ur, "Units")
+                        item["rate"] = _editor_to_month_map(edited_ur, "Rate")
                     calc_vals = item_cost_by_month(item)
                     st.dataframe(
                         pd.DataFrame([calc_vals], index=["Value (auto)"], columns=MONTHS),
@@ -561,6 +643,7 @@ def render_department_form(department: str, payload: dict) -> dict:
                     "Comment / Assumption",
                     value=item.get("comment", ""),
                     key=f"comment_{department}_{item_id}",
+                    disabled=edit_locked,
                 )
 
                 if is_travel_section(section):
@@ -570,13 +653,16 @@ def render_department_form(department: str, payload: dict) -> dict:
                             index=["Expected Return"],
                             columns=MONTHS,
                         )
-                        edited_benefit = st.data_editor(
-                            benefit_df,
-                            key=f"benefit_{department}_{item_id}",
-                            use_container_width=True,
-                            num_rows="fixed",
-                        )
-                        item["benefit"] = _editor_to_month_map(edited_benefit, "Expected Return")
+                        if edit_locked:
+                            st.dataframe(benefit_df, use_container_width=True)
+                        else:
+                            edited_benefit = st.data_editor(
+                                benefit_df,
+                                key=f"benefit_{department}_{item_id}",
+                                use_container_width=True,
+                                num_rows="fixed",
+                            )
+                            item["benefit"] = _editor_to_month_map(edited_benefit, "Expected Return")
 
                         fy_roi = item_fy_roi(item)
                         st.caption(
@@ -584,14 +670,15 @@ def render_department_form(department: str, payload: dict) -> dict:
                             f"FY ROI: {(f'{fy_roi:.2f}%' if fy_roi is not None else 'N/A')}"
                         )
 
-                        uploaded = st.file_uploader(
-                            "Attach supporting document",
-                            type=["pdf", "xlsx", "docx", "png", "jpg", "jpeg"],
-                            key=f"up_{department}_{item_id}",
-                        )
-                        err = add_attachment(item, uploaded)
-                        if err:
-                            st.warning(err)
+                        if not edit_locked:
+                            uploaded = st.file_uploader(
+                                "Attach supporting document",
+                                type=["pdf", "xlsx", "docx", "png", "jpg", "jpeg"],
+                                key=f"up_{department}_{item_id}",
+                            )
+                            err = add_attachment(item, uploaded)
+                            if err:
+                                st.warning(err)
 
                         docs = item.get("attachments", [])
                         if docs:
@@ -605,9 +692,10 @@ def render_department_form(department: str, payload: dict) -> dict:
                                     mime=doc.get("mime", "application/octet-stream"),
                                     key=f"dl_{department}_{item_id}_{doc.get('id')}",
                                 )
-                                if d2.button("Remove", key=f"rm_{department}_{item_id}_{doc.get('id')}"):
-                                    item["attachments"] = [a for a in docs if a.get("id") != doc.get("id")]
-                                    st.rerun()
+                                if not edit_locked:
+                                    if d2.button("Remove", key=f"rm_{department}_{item_id}_{doc.get('id')}"):
+                                        item["attachments"] = [a for a in docs if a.get("id") != doc.get("id")]
+                                        st.rerun()
 
                 st.divider()
 
@@ -698,10 +786,32 @@ def login_view(auth_map: dict, master_pw: str) -> None:
 def app_view(auth_map: dict, master_pw: str) -> None:
     all_departments = sorted(auth_map.keys())
 
+    settings = load_app_settings()
+    edit_locked = bool(settings.get("edit_locked", False))
+
     with st.sidebar:
         st.write(f"Role: {st.session_state.role}")
         if st.session_state.role == "department":
             st.write(f"Department: {st.session_state.department}")
+            if edit_locked:
+                st.warning("Editing is locked")
+
+        if st.session_state.role == "master":
+            new_locked = st.toggle(
+                "Lock editing for departments",
+                value=edit_locked,
+                help="When ON, departments can view/download but cannot add, delete, edit, upload, or save data.",
+            )
+            if new_locked != edit_locked:
+                save_app_settings(
+                    {
+                        **settings,
+                        "edit_locked": bool(new_locked),
+                        "locked_by": "MASTER",
+                        "locked_at": datetime.now().isoformat(timespec="seconds") if new_locked else None,
+                    }
+                )
+                st.rerun()
         if st.button("Logout"):
             st.session_state.authenticated = False
             st.session_state.role = None
@@ -717,7 +827,7 @@ def app_view(auth_map: dict, master_pw: str) -> None:
             st.session_state[work_key] = load_payload(dept)
 
         current_payload = st.session_state[work_key]
-        current_payload = render_department_form(dept, current_payload)
+        current_payload = render_department_form(dept, current_payload, edit_locked=edit_locked)
         st.session_state[work_key] = current_payload
 
         st.subheader("Travel ROI Snapshot")
@@ -729,9 +839,12 @@ def app_view(auth_map: dict, master_pw: str) -> None:
 
         col1, col2 = st.columns([1, 1])
         with col1:
-            if st.button("Save Department Data", type="primary"):
-                save_payload(dept, current_payload)
-                st.success("Department data saved.")
+            if st.button("Save Department Data", type="primary", disabled=edit_locked):
+                if edit_locked:
+                    st.warning("Editing is locked. MASTER must unlock before you can save changes.")
+                else:
+                    save_payload(dept, current_payload)
+                    st.success("Department data saved.")
 
         with col2:
             xlsx = workbook_bytes({dept: current_payload}, [dept], include_summary=False)
