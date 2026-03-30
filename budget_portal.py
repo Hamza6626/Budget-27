@@ -18,6 +18,7 @@ APP_TITLE = "MGA Budget Portal FY2026-27"
 DB_PATH = Path(__file__).with_name("budget_data.db")
 PASSWORD_CSV = Path(__file__).with_name("DepartmentPasswords_CONFIDENTIAL.csv")
 APP_SETTINGS_KEY = "__APP_SETTINGS__"
+LOGO_PATH = Path(__file__).with_name("mg_apparel_logo.png")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
 USE_SUPABASE = bool(SUPABASE_URL and SUPABASE_KEY)
@@ -57,6 +58,32 @@ def default_app_settings() -> dict:
 
 def normalize_name(name: str) -> str:
     return name.strip().upper()
+
+
+def _get_logo_source() -> str | Path | None:
+    try:
+        logo_url = str(st.secrets.get("LOGO_URL", "")).strip()
+    except Exception:
+        logo_url = ""
+    if logo_url:
+        return logo_url
+    if LOGO_PATH.exists():
+        return LOGO_PATH
+    return None
+
+
+def render_header(compact: bool = False) -> None:
+    logo = _get_logo_source()
+    if logo:
+        c1, c2, c3 = st.columns([2, 1, 2])
+        with c2:
+            st.image(logo, use_container_width=True)
+
+    if compact:
+        st.markdown(f"## {APP_TITLE}")
+    else:
+        st.markdown(f"# {APP_TITLE}")
+        st.caption("Login with your assigned department password.")
 
 
 def month_map(default: float = 0.0) -> dict:
@@ -755,18 +782,23 @@ def master_documents_rows(all_payloads: dict) -> list[dict]:
 
 
 def login_view(auth_map: dict, master_pw: str) -> None:
-    st.title(APP_TITLE)
-    st.write("Secure budget entry without VBA. Login with your assigned password.")
-    if USE_SUPABASE:
-        st.caption("Storage backend: Supabase (persistent across restarts/deploys)")
-    else:
-        st.caption("Storage backend: Local SQLite (not durable on Streamlit Cloud redeploys)")
+    render_header(compact=False)
 
     departments = sorted(auth_map.keys())
-    with st.form("login_form", clear_on_submit=False):
-        login_as = st.selectbox("Login As", options=["MASTER"] + departments)
-        pw = st.text_input("Password", type="password")
-        submit = st.form_submit_button("Login")
+    outer = st.container()
+    with outer:
+        cols = st.columns([1, 1, 1])
+        with cols[1]:
+            try:
+                card = st.container(border=True)
+            except TypeError:
+                card = st.container()
+            with card:
+                st.markdown("### Sign in")
+                with st.form("login_form", clear_on_submit=False):
+                    login_as = st.selectbox("Login As", options=["MASTER"] + departments)
+                    pw = st.text_input("Password", type="password")
+                    submit = st.form_submit_button("Login", use_container_width=True)
 
     if not submit:
         return
@@ -840,7 +872,7 @@ def app_view(auth_map: dict, master_pw: str) -> None:
             st.session_state.department = None
             st.rerun()
 
-    st.title(APP_TITLE)
+    render_header(compact=True)
 
     if st.session_state.role == "department":
         dept = st.session_state.department
