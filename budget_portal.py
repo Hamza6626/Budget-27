@@ -55,7 +55,7 @@ ALLOWED_ATTACHMENT_TYPES = {
     "image/jpeg",
 }
 
-TRAVEL_COST_KEYS = ["Travelling Fare", "Food", "Lodging"]
+TRAVEL_COST_KEYS = ["Food", "Lodging", "Travelling Fare"]
 
 
 def default_app_settings() -> dict:
