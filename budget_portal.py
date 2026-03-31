@@ -64,6 +64,83 @@ SUPPLY_CHAIN_SEGMENTS = [
     "MATERIAL MANAGEMENT & CONTROL",
 ]
 
+REMOVED_DEPARTMENTS = {
+    "R61 OPERATIONS",
+}
+
+DEFAULT_DEPARTMENT_DOMAINS = {
+    "ACCOUNTS": "Umer Malik",
+    "AUDIT": "Usman BK",
+    "BUSINESS AFFAIRS, SUSTAINABILITY, CSR": "Kehkeshan",
+    "PD & SAMPLING": "Alaoudin",
+    "MARKETING & MERCHANDIZING": "Naqeeb",
+    "RESEARCH & DESIGN": "Naqeeb",
+    "SUPPLY CHAIN": "Kashif Basit",
+    "ENGINEERING & UTILITIES": "Alaoudin",
+    "ADMINISTRATION": "Saman",
+    "COMPLIANCE, HSE & IR": "Saman",
+    "STORES": "Kashif Basit",
+    "HUMAN RESOURCES": "Saman",
+    "CUTTING & EMBROIDERY": "Alaoudin",
+    "STITCHING": "Alaoudin",
+    "WASHING & DRY PROCESS": "Alaoudin",
+    "FINISHING": "Alaoudin",
+    "PPC & WIP": "Alaoudin",
+    "IE & PROCESS IMPROVEMENT": "Alaoudin",
+    "MAINTENANCE": "Alaoudin",
+    "MIS & IT": "Ahmed",
+    "QUALITY ASSURANCE": "Alaoudin",
+    "QUALITY CONTROL": "Alaoudin",
+    "DSBA": "Hamza Zahid",
+}
+
+
+def load_department_domains() -> dict[str, str]:
+    """Returns a mapping of DEPARTMENT -> DOMAIN.
+
+    Optional override via Streamlit Secrets:
+      [DEPARTMENT_DOMAINS]
+      ACCOUNTS = "Umer Malik"
+      ...
+    """
+    mapping: dict[str, str] = {}
+    try:
+        raw = st.secrets.get("DEPARTMENT_DOMAINS", {})
+        raw_items = dict(raw).items()
+    except Exception:
+        raw_items = []
+
+    for dept, dom in raw_items:
+        d = normalize_name(str(dept))
+        v = str(dom).strip()
+        if d and v:
+            mapping[d] = v
+
+    if not mapping:
+        for dept, dom in DEFAULT_DEPARTMENT_DOMAINS.items():
+            mapping[normalize_name(dept)] = str(dom).strip()
+
+    # Ensure the Supply Chain segments inherit the Supply Chain domain.
+    sc_dom = mapping.get(SUPPLY_CHAIN_DOMAIN)
+    if sc_dom:
+        for seg in SUPPLY_CHAIN_SEGMENTS:
+            mapping.setdefault(seg, sc_dom)
+
+    return mapping
+
+
+def department_domain_for_login(dept_domains: dict[str, str], login_as: str) -> str:
+    if login_as == SUPPLY_CHAIN_DOMAIN:
+        dom = dept_domains.get(SUPPLY_CHAIN_DOMAIN, "").strip()
+        if dom:
+            return dom
+        seg_domains = {str(dept_domains.get(seg, "")).strip() for seg in SUPPLY_CHAIN_SEGMENTS}
+        seg_domains = {d for d in seg_domains if d}
+        if len(seg_domains) == 1:
+            return next(iter(seg_domains))
+        return ""
+    return str(dept_domains.get(login_as, "")).strip()
+
 
 def supply_chain_enabled(auth_map: dict) -> bool:
     return SUPPLY_CHAIN_DOMAIN in auth_map
@@ -287,7 +364,10 @@ def _load_auth_from_secrets() -> tuple[dict, str] | None:
 def load_auth_map() -> tuple[dict, str]:
     from_secrets = _load_auth_from_secrets()
     if from_secrets:
-        return from_secrets
+        dept_passwords, master_pw = from_secrets
+        for d in REMOVED_DEPARTMENTS:
+            dept_passwords.pop(normalize_name(d), None)
+        return dept_passwords, master_pw
 
     if not PASSWORD_CSV.exists():
         st.error("No auth source found. Configure Streamlit Secrets or provide DepartmentPasswords_CONFIDENTIAL.csv")
@@ -309,6 +389,9 @@ def load_auth_map() -> tuple[dict, str]:
     if not master_password:
         st.error("Master password entry [MASTER] missing in DepartmentPasswords_CONFIDENTIAL.csv")
         st.stop()
+
+    for d in REMOVED_DEPARTMENTS:
+        dept_passwords.pop(normalize_name(d), None)
 
     return dept_passwords, master_password
 
@@ -966,6 +1049,15 @@ def login_view(auth_map: dict, master_pw: str) -> None:
     render_header(compact=False)
 
     departments = login_domains(auth_map)
+    dept_domains = load_department_domains()
+    domain_options = sorted(
+        {
+            department_domain_for_login(dept_domains, d)
+            for d in departments
+            if department_domain_for_login(dept_domains, d)
+        }
+    )
+
     outer = st.container()
     with outer:
         cols = st.columns([1, 1, 1])
@@ -977,7 +1069,14 @@ def login_view(auth_map: dict, master_pw: str) -> None:
             with card:
                 st.markdown("### Sign in")
                 with st.form("login_form", clear_on_submit=False):
-                    login_as = st.selectbox("Login As", options=["MASTER"] + departments)
+                    selected_domain = st.selectbox("Domain", options=domain_options)
+                    visible_departments = [
+                        d
+                        for d in departments
+                        if department_domain_for_login(dept_domains, d) == selected_domain
+                    ]
+
+                    login_as = st.selectbox("Login As", options=["MASTER"] + visible_departments)
                     pw = st.text_input("Password", type="password")
                     submit = st.form_submit_button("Login", use_container_width=True)
 
