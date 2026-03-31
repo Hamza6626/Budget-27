@@ -82,6 +82,9 @@ PRODUCTION_SHEET_LINK_SECRET_KEY = "PRODUCTION_SHEET_LINK"
 
 DEPARTMENT_SHEET_LINKS_SECRET_KEY = "DEPARTMENT_SHEET_LINKS"
 
+HUMAN_RESOURCES_DEPT = "HUMAN RESOURCES"
+HUMAN_RESOURCES_SHEET_LINK_SECRET_KEY = "HUMAN_RESOURCES_SHEET_LINK"
+
 MARKETING_DEPT = "MARKETING & MERCHANDIZING"
 PPC_DEPT = "PPC & WIP"
 
@@ -316,6 +319,20 @@ def department_sheet_link(department: str) -> str:
     dept_norm = normalize_name(str(department or ""))
     if not dept_norm:
         return ""
+
+    # Production-style single secret key for HR (matches the "same steps" approach).
+    if dept_norm == normalize_name(HUMAN_RESOURCES_DEPT):
+        try:
+            raw_hr = st.secrets.get(HUMAN_RESOURCES_SHEET_LINK_SECRET_KEY, "")
+            if isinstance(raw_hr, str):
+                link = raw_hr.strip()
+                if link and "..." not in link:
+                    return link
+        except Exception:
+            pass
+        link = os.getenv(HUMAN_RESOURCES_SHEET_LINK_SECRET_KEY, "").strip()
+        if link and "..." not in link:
+            return link
 
     # 1) Streamlit Secrets
     try:
