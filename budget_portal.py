@@ -70,7 +70,8 @@ SUPPLY_CHAIN_SEGMENTS = [
 MARKETING_DEPT = "MARKETING & MERCHANDIZING"
 PPC_DEPT = "PPC & WIP"
 
-MKT_TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "MKT"
+_HERE = Path(__file__).resolve().parent
+MKT_TEMPLATES_DIR = (_HERE / "MKT") if (_HERE / "MKT").exists() else (_HERE.parent / "MKT")
 MKT_TEMPLATE_FILES = {
     "Sales Plan.xlsx": {
         "title": "Sales Plan",
