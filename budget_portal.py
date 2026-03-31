@@ -1086,15 +1086,30 @@ def _to_float(value) -> float:
             return float(value)
 
         if isinstance(value, str):
-            s = value.strip()
+            raw_s = value.strip()
+            s = raw_s
             if not s:
                 return 0.0
+
+            # Simple fraction support (common for rates like 1/2).
+            m_frac = re.fullmatch(r"\s*([-+]?\d+)\s*/\s*(\d+)\s*", s)
+            if m_frac:
+                num = float(m_frac.group(1))
+                den = float(m_frac.group(2))
+                if den == 0:
+                    return 0.0
+                return num / den
 
             # Common user entry formats: thousands separators, currency labels/symbols, parentheses for negatives.
             negative = False
             if s.startswith("(") and s.endswith(")"):
                 negative = True
                 s = s[1:-1].strip()
+
+            # Trailing minus sign (e.g. 100-)
+            if s.endswith("-") and not s.startswith("-"):
+                negative = True
+                s = s[:-1].strip()
 
             s = s.replace(",", "")
             s = s.replace("\u00a0", " ").strip()  # NBSP
