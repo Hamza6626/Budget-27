@@ -290,6 +290,35 @@ def production_sheet_link() -> str:
     return ""
 
 
+def production_sheet_link_diagnostics() -> dict:
+    """Diagnostics to help troubleshoot Streamlit Cloud Secrets wiring."""
+    diag: dict = {}
+    try:
+        root_raw = st.secrets.get(PRODUCTION_SHEET_LINK_SECRET_KEY, None)
+    except Exception as e:
+        root_raw = f"<error: {type(e).__name__}>"
+    diag["root_type"] = type(root_raw).__name__
+    diag["root_present"] = root_raw is not None
+    diag["root_str_len"] = len(root_raw.strip()) if isinstance(root_raw, str) else None
+    diag["root_dict_keys"] = sorted(list(root_raw.keys()))[:10] if isinstance(root_raw, dict) else None
+
+    env_val = os.getenv(PRODUCTION_SHEET_LINK_SECRET_KEY, "")
+    diag["env_present"] = bool(env_val.strip())
+    diag["env_len"] = len(env_val.strip()) if env_val else 0
+
+    try:
+        mkt_links = st.secrets.get(MKT_SHEETS_LINKS_SECRET_KEY, {})
+    except Exception as e:
+        mkt_links = f"<error: {type(e).__name__}>"
+    diag["mkt_type"] = type(mkt_links).__name__
+    if isinstance(mkt_links, dict):
+        diag["mkt_has_prod_key"] = PRODUCTION_SHEET_LINK_SECRET_KEY in mkt_links
+    else:
+        diag["mkt_has_prod_key"] = None
+
+    return diag
+
+
 def department_domain_for_login(dept_domains: dict[str, str], login_as: str) -> str:
     if login_as == SUPPLY_CHAIN_DOMAIN:
         dom = dept_domains.get(SUPPLY_CHAIN_DOMAIN, "").strip()
@@ -1793,6 +1822,8 @@ def app_view(auth_map: dict, master_pw: str) -> None:
                 st.link_button("Open Production.xlsx (OneDrive)", link)
             else:
                 st.warning("Production.xlsx link not configured. Add PRODUCTION_SHEET_LINK in Streamlit Secrets.")
+                with st.expander("Debug: why link not found?", expanded=False):
+                    st.write(production_sheet_link_diagnostics())
 
         current_payload = render_department_form(dept, current_payload, edit_locked=edit_locked)
         st.session_state[work_key] = current_payload
