@@ -57,6 +57,34 @@ ALLOWED_ATTACHMENT_TYPES = {
 
 TRAVEL_COST_KEYS = ["Food", "Lodging", "Travelling Fare"]
 
+SUPPLY_CHAIN_DOMAIN = "SUPPLY CHAIN"
+SUPPLY_CHAIN_SEGMENTS = [
+    "FABRIC SOURCING",
+    "EXPORT & LOGISTICS",
+    "MATERIAL MANAGEMENT & CONTROL",
+]
+
+
+def supply_chain_enabled(auth_map: dict) -> bool:
+    return all(seg in auth_map for seg in SUPPLY_CHAIN_SEGMENTS)
+
+
+def login_domains(auth_map: dict) -> list[str]:
+    domains = sorted(auth_map.keys())
+    if supply_chain_enabled(auth_map):
+        domains = [d for d in domains if d not in SUPPLY_CHAIN_SEGMENTS and d != SUPPLY_CHAIN_DOMAIN]
+        domains.append(SUPPLY_CHAIN_DOMAIN)
+        domains = sorted(domains)
+    return domains
+
+
+def check_domain_password(auth_map: dict, domain: str, password: str) -> bool:
+    if domain == SUPPLY_CHAIN_DOMAIN and supply_chain_enabled(auth_map):
+        # Allow either an explicit SUPPLY CHAIN password (if configured) OR any of the 3 segment passwords.
+        candidates = [auth_map.get(SUPPLY_CHAIN_DOMAIN, "")] + [auth_map.get(seg, "") for seg in SUPPLY_CHAIN_SEGMENTS]
+        return password in [c for c in candidates if c]
+    return auth_map.get(domain) == password
+
 
 def default_app_settings() -> dict:
     return {
@@ -939,7 +967,7 @@ def master_documents_rows(all_payloads: dict) -> list[dict]:
 def login_view(auth_map: dict, master_pw: str) -> None:
     render_header(compact=False)
 
-    departments = sorted(auth_map.keys())
+    departments = login_domains(auth_map)
     outer = st.container()
     with outer:
         cols = st.columns([1, 1, 1])
@@ -964,17 +992,22 @@ def login_view(auth_map: dict, master_pw: str) -> None:
         st.session_state.department = None
         st.rerun()
 
-    if login_as != "MASTER" and auth_map.get(login_as) == pw:
+    if login_as != "MASTER" and check_domain_password(auth_map, login_as, pw):
         st.session_state.authenticated = True
         st.session_state.role = "department"
-        st.session_state.department = login_as
+        st.session_state.department_domain = login_as
+        if login_as == SUPPLY_CHAIN_DOMAIN and supply_chain_enabled(auth_map):
+            st.session_state.supply_chain_segment = SUPPLY_CHAIN_SEGMENTS[0]
+            st.session_state.department = st.session_state.supply_chain_segment
+        else:
+            st.session_state.department = login_as
         st.rerun()
 
     st.error("Invalid password")
 
 
 def app_view(auth_map: dict, master_pw: str) -> None:
-    all_departments = sorted(auth_map.keys())
+    all_departments = sorted([d for d in auth_map.keys() if d != SUPPLY_CHAIN_DOMAIN])
 
     settings = load_app_settings()
     edit_locked = bool(settings.get("edit_locked", False))
@@ -983,7 +1016,23 @@ def app_view(auth_map: dict, master_pw: str) -> None:
     with st.sidebar:
         st.write(f"Role: {st.session_state.role}")
         if st.session_state.role == "department":
-            st.write(f"Department: {st.session_state.department}")
+            domain = st.session_state.get("department_domain") or st.session_state.department
+            st.write(f"Department: {domain}")
+
+            if domain == SUPPLY_CHAIN_DOMAIN and supply_chain_enabled(auth_map):
+                seg = st.selectbox(
+                    "Segregation",
+                    options=SUPPLY_CHAIN_SEGMENTS,
+                    index=SUPPLY_CHAIN_SEGMENTS.index(st.session_state.get("supply_chain_segment", SUPPLY_CHAIN_SEGMENTS[0]))
+                    if st.session_state.get("supply_chain_segment") in SUPPLY_CHAIN_SEGMENTS
+                    else 0,
+                )
+                if seg != st.session_state.get("supply_chain_segment"):
+                    st.session_state.supply_chain_segment = seg
+                    st.session_state.department = seg
+                    st.rerun()
+
+                st.caption(f"Active: {st.session_state.department}")
             if edit_locked:
                 st.warning("Editing is locked")
             if view_locked:
@@ -1025,6 +1074,8 @@ def app_view(auth_map: dict, master_pw: str) -> None:
             st.session_state.authenticated = False
             st.session_state.role = None
             st.session_state.department = None
+            st.session_state.department_domain = None
+            st.session_state.supply_chain_segment = None
             st.rerun()
 
     render_header(compact=True)
@@ -1140,6 +1191,8 @@ def main() -> None:
         st.session_state.authenticated = False
         st.session_state.role = None
         st.session_state.department = None
+        st.session_state.department_domain = None
+        st.session_state.supply_chain_segment = None
 
     if not st.session_state.authenticated:
         login_view(auth_map, master_pw)
