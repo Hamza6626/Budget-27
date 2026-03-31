@@ -254,13 +254,20 @@ def production_departments(dept_domains: dict[str, str], auth_map: dict) -> list
 def production_sheet_link() -> str:
     try:
         link = str(st.secrets.get(PRODUCTION_SHEET_LINK_SECRET_KEY, "")).strip()
-        if link:
+        if link and "..." not in link:
             return link
 
         # Back-compat: allow storing this link inside the same dict as MKT links.
         mkt_links = st.secrets.get(MKT_SHEETS_LINKS_SECRET_KEY, {})
         if isinstance(mkt_links, dict):
-            return str(mkt_links.get(PRODUCTION_SHEET_LINK_SECRET_KEY, "")).strip()
+            link = str(mkt_links.get(PRODUCTION_SHEET_LINK_SECRET_KEY, "")).strip()
+            if link and "..." not in link:
+                return link
+
+        # Extra safety: some environments expose secrets as env vars.
+        link = os.getenv(PRODUCTION_SHEET_LINK_SECRET_KEY, "").strip()
+        if link and "..." not in link:
+            return link
     except Exception:
         pass
     return ""
