@@ -55,6 +55,9 @@ ALLOWED_ATTACHMENT_TYPES = {
     "image/jpeg",
 }
 
+MAX_SHARED_SHEET_BYTES = 25 * 1024 * 1024
+ALLOWED_SHARED_SHEET_EXTS = {"xlsx", "xlsm"}
+
 TRAVEL_COST_KEYS = ["Food", "Lodging", "Travelling Fare"]
 
 SUPPLY_CHAIN_DOMAIN = "SUPPLY CHAIN"
@@ -63,6 +66,21 @@ SUPPLY_CHAIN_SEGMENTS = [
     "EXPORT & LOGISTICS",
     "MATERIAL MANAGEMENT & CONTROL",
 ]
+
+MARKETING_DEPT = "MARKETING & MERCHANDIZING"
+PPC_DEPT = "PPC & WIP"
+
+MKT_TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "MKT"
+MKT_TEMPLATE_FILES = {
+    "Sales Plan.xlsx": {
+        "title": "Sales Plan",
+        "shared": False,
+    },
+    "Working Capital.xlsx": {
+        "title": "Working Capital",
+        "shared": True,
+    },
+}
 
 REMOVED_DEPARTMENTS = {
     "R61 OPERATIONS",
@@ -243,6 +261,183 @@ def create_item(name: str, kind: str = "units_rate", item_id: str | None = None)
 def attachment_label(att: dict) -> str:
     size_kb = int((_to_float(att.get("size", 0)) + 1023) // 1024)
     return f"{att.get('name', 'document')} ({size_kb} KB)"
+
+
+def _doc_key(prefix: str, name: str) -> str:
+    safe = "".join(ch if ch.isalnum() else "_" for ch in name.strip().upper())
+    safe = "_".join([p for p in safe.split("_") if p])
+    return f"__{prefix}__{safe}__"
+
+
+def load_shared_sheet(doc_name: str) -> dict | None:
+    key = _doc_key("SHARED_SHEET", doc_name)
+    if USE_SUPABASE:
+        raw = _supabase_get_payload(key)
+        if not raw:
+            return None
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                return None
+        return raw if isinstance(raw, dict) else None
+
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT payload_json FROM budget_entries WHERE department = ?", (key,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    try:
+        raw = json.loads(row[0])
+    except Exception:
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def save_shared_sheet(doc_name: str, meta: dict) -> None:
+    key = _doc_key("SHARED_SHEET", doc_name)
+    now = datetime.now().isoformat(timespec="seconds")
+    payload = {**(meta or {}), "updated_at": now}
+
+    if USE_SUPABASE:
+        _supabase_upsert_payload(key, payload, now)
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """
+        INSERT INTO budget_entries (department, payload_json, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(department)
+        DO UPDATE SET payload_json=excluded.payload_json, updated_at=excluded.updated_at
+        """,
+        (key, json.dumps(payload), now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _seed_sheet_if_missing(doc_file: str) -> None:
+    existing = load_shared_sheet(doc_file)
+    if existing and existing.get("content_b64"):
+        return
+    p = MKT_TEMPLATES_DIR / doc_file
+    if not p.exists():
+        return
+    try:
+        b = p.read_bytes()
+    except Exception:
+        return
+    if len(b) > MAX_SHARED_SHEET_BYTES:
+        return
+    save_shared_sheet(
+        doc_file,
+        {
+            "file_name": doc_file,
+            "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "size": len(b),
+            "content_b64": base64.b64encode(b).decode("ascii"),
+            "updated_by": "TEMPLATE_SEED",
+        },
+    )
+
+
+def can_access_shared_sheet(role: str, dept: str | None, dept_domain: str | None, doc_file: str) -> bool:
+    if role == "master":
+        return True
+
+    if not dept:
+        return False
+
+    if doc_file not in MKT_TEMPLATE_FILES:
+        return False
+
+    cfg = MKT_TEMPLATE_FILES[doc_file]
+    if not cfg.get("shared", False):
+        return dept == MARKETING_DEPT
+
+    # Working Capital: Marketing, PPC & WIP, Supply Chain domain.
+    if dept == MARKETING_DEPT or dept == PPC_DEPT:
+        return True
+    if (dept_domain or "").strip().upper() == SUPPLY_CHAIN_DOMAIN:
+        return True
+    return False
+
+
+def render_shared_sheets_panel(edit_locked: bool, view_locked: bool) -> None:
+    role = st.session_state.role
+    dept = st.session_state.department
+    dept_domain = st.session_state.get("department_domain")
+    if role != "master" and not dept:
+        return
+    if role != "master" and view_locked:
+        return
+
+    visible_files = [
+        f for f in MKT_TEMPLATE_FILES.keys()
+        if can_access_shared_sheet(role, dept, dept_domain, f)
+    ]
+    if not visible_files:
+        return
+
+    st.subheader("Sheets")
+    st.caption("These Excel sheets are stored as-is (formats/formulas unchanged). Download, edit in Excel, then upload the updated file.")
+
+    for doc_file in visible_files:
+        cfg = MKT_TEMPLATE_FILES[doc_file]
+        title = cfg.get("title", doc_file)
+        is_shared = bool(cfg.get("shared", False))
+        _seed_sheet_if_missing(doc_file)
+        current = load_shared_sheet(doc_file) or {}
+
+        with st.expander(f"{title}{' (Shared)' if is_shared else ''}", expanded=False):
+            upd = current.get("updated_at")
+            upd_by = current.get("updated_by")
+            if upd:
+                st.caption(f"Last updated: {upd} ({upd_by or 'unknown'})")
+            else:
+                st.warning("No file uploaded yet.")
+
+            if current.get("content_b64"):
+                st.download_button(
+                    f"Download {doc_file}",
+                    data=base64.b64decode(current.get("content_b64", "")),
+                    file_name=current.get("file_name", doc_file),
+                    mime=current.get("mime", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+                    key=f"dl_shared_{doc_file}",
+                )
+
+            if edit_locked and role != "master":
+                st.info("Editing is locked by MASTER. Upload disabled.")
+                continue
+
+            uploaded = st.file_uploader(
+                "Upload updated Excel file",
+                type=sorted(ALLOWED_SHARED_SHEET_EXTS),
+                key=f"up_shared_{doc_file}",
+            )
+            if uploaded is None:
+                continue
+
+            file_bytes = uploaded.getvalue()
+            if len(file_bytes) > MAX_SHARED_SHEET_BYTES:
+                st.error("File too large for upload (max 25 MB).")
+                continue
+
+            save_shared_sheet(
+                doc_file,
+                {
+                    "file_name": uploaded.name,
+                    "mime": uploaded.type or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "size": len(file_bytes),
+                    "content_b64": base64.b64encode(file_bytes).decode("ascii"),
+                    "updated_by": "MASTER" if role == "master" else (dept_domain or dept),
+                },
+            )
+            st.success("Uploaded. Other allowed departments will see the latest version.")
+            st.rerun()
 
 
 def _is_duplicate_attachment(item: dict, uploaded_name: str, uploaded_size: int) -> bool:
@@ -1223,6 +1418,8 @@ def app_view(auth_map: dict, master_pw: str) -> None:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
+        render_shared_sheets_panel(edit_locked=edit_locked, view_locked=view_locked)
+
     if st.session_state.role == "master":
         all_payloads = load_all_payloads(all_departments)
 
@@ -1282,6 +1479,8 @@ def app_view(auth_map: dict, master_pw: str) -> None:
             file_name="Budget_Master_Consolidated.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+
+        render_shared_sheets_panel(edit_locked=False, view_locked=False)
 
 
 def main() -> None:
