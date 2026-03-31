@@ -1072,8 +1072,41 @@ def load_auth_map() -> tuple[dict, str]:
 
 def _to_float(value) -> float:
     try:
-        if value is None or value == "":
+        if value is None:
             return 0.0
+
+        # Handle pandas/numpy missing values.
+        try:
+            if pd.isna(value):
+                return 0.0
+        except Exception:
+            pass
+
+        if isinstance(value, (int, float)):
+            return float(value)
+
+        if isinstance(value, str):
+            s = value.strip()
+            if not s:
+                return 0.0
+
+            # Common user entry formats: thousands separators, currency labels/symbols, parentheses for negatives.
+            negative = False
+            if s.startswith("(") and s.endswith(")"):
+                negative = True
+                s = s[1:-1].strip()
+
+            s = s.replace(",", "")
+            s = s.replace("\u00a0", " ").strip()  # NBSP
+
+            # Strip common currency tokens while keeping digits/sign/decimal/exponent.
+            s = re.sub(r"[^0-9eE+\-\.]+", "", s)
+            if not s or s in {"-", "+", "."}:
+                return 0.0
+
+            out = float(s)
+            return -out if negative else out
+
         return float(value)
     except Exception:
         return 0.0
