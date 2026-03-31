@@ -10,13 +10,13 @@ from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote
 import xml.etree.ElementTree as ET
-from collections.abc import Mapping
 
 import pandas as pd
 import requests
 import streamlit as st
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
+from collections.abc import Mapping
 
 APP_TITLE = "MGA Budget Portal FY2026-27"
 DB_PATH = Path(__file__).with_name("budget_data.db")
@@ -33,8 +33,15 @@ LOGO_CANDIDATES = [
     "logo.jpg",
     "logo.jpeg",
 ]
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
+def _get_secret_str(key: str) -> str:
+    try:
+        return str(st.secrets.get(key, "")).strip()
+    except Exception:
+        return ""
+
+
+SUPABASE_URL = (_get_secret_str("SUPABASE_URL") or os.getenv("SUPABASE_URL", "")).strip().rstrip("/")
+SUPABASE_KEY = (_get_secret_str("SUPABASE_KEY") or os.getenv("SUPABASE_KEY", "")).strip()
 USE_SUPABASE = bool(SUPABASE_URL and SUPABASE_KEY)
 MONTHS = [
     "Jul-26", "Aug-26", "Sep-26", "Oct-26", "Nov-26", "Dec-26",
