@@ -42,27 +42,34 @@ DEPARTMENTS = [
     "DSBA",
 ]
 
+# Optional: store per-department OneDrive links (used for email sharing / reference).
+# Keep sheet names unchanged; this is only written into the confidential CSV output.
+DEPT_ONEDRIVE_LINKS: dict[str, str] = {
+    "HUMAN RESOURCES": "https://mgapparel-my.sharepoint.com/personal/hamza_zahid_mgapparel_com/Documents/Desktop/Budget%20Mails/HR,%20Admin%20&%20Compliance/HR/HR.xlsx?web=1",
+}
+
 
 def _random_password(length: int = 18) -> str:
     alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
-def _write_password_csv(master_password: str, dept_passwords: dict) -> None:
+def _write_password_csv(master_password: str, dept_passwords: dict, dept_links: dict[str, str] | None = None) -> None:
+    dept_links = dept_links or {}
     PASSWORD_CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(PASSWORD_CSV_PATH, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["Department", "Password"])
-        w.writerow(["[MASTER]", master_password])
+        w.writerow(["Department", "Password", "OneDriveLink"])
+        w.writerow(["[MASTER]", master_password, ""])
         for dept in DEPARTMENTS:
-            w.writerow([dept, dept_passwords[dept]])
+            w.writerow([dept, dept_passwords[dept], dept_links.get(dept, "")])
 
 
 def load_passwords() -> tuple[str, dict]:
     if not PASSWORD_CSV_PATH.exists():
         master_password = _random_password(24)
         dept_passwords = {dept: _random_password(20) for dept in DEPARTMENTS}
-        _write_password_csv(master_password, dept_passwords)
+        _write_password_csv(master_password, dept_passwords, DEPT_ONEDRIVE_LINKS)
         print("Created DepartmentPasswords_CONFIDENTIAL.csv with random passwords:")
         print(f"  {PASSWORD_CSV_PATH}")
         return master_password, dept_passwords
@@ -744,11 +751,12 @@ with open(bas_path, "w", encoding="utf-8") as f:
 
 # ─── WRITE PASSWORD REFERENCE CSV ────────────────────────────────────────────
 csv_path = os.path.join(OUTPUT_DIR, "DepartmentPasswords_CONFIDENTIAL.csv")
-with open(csv_path, "w", encoding="utf-8") as f:
-    f.write("Department,Password\n")
-    f.write(f"[MASTER],{MASTER_PASSWORD}\n")
-    for dept, pw in DEPT_PASSWORDS.items():
-        f.write(f'"{dept}",{pw}\n')
+with open(csv_path, "w", encoding="utf-8", newline="") as f:
+    w = csv.writer(f)
+    w.writerow(["Department", "Password", "OneDriveLink"])
+    w.writerow(["[MASTER]", MASTER_PASSWORD, ""])
+    for dept in DEPARTMENTS:
+        w.writerow([dept, DEPT_PASSWORDS[dept], DEPT_ONEDRIVE_LINKS.get(dept, "")])
 
 # ─── WRITE SETUP INSTRUCTIONS ────────────────────────────────────────────────
 readme_path = os.path.join(OUTPUT_DIR, "SETUP_INSTRUCTIONS.txt")
