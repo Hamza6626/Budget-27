@@ -334,6 +334,23 @@ def department_sheet_link(department: str) -> str:
         if link and "..." not in link:
             return link
 
+        # Back-compat: allow storing HR link in the same table as MKT/Production links.
+        try:
+            mkt_links = st.secrets.get(MKT_SHEETS_LINKS_SECRET_KEY, {})
+        except Exception:
+            mkt_links = {}
+
+        if isinstance(mkt_links, Mapping):
+            # Preferred inside this table: a friendly filename key.
+            link = str(mkt_links.get("HR.xlsx", "")).strip()  # type: ignore[attr-defined]
+            if link and "..." not in link:
+                return link
+
+            # Also accept the secret-key name.
+            link = str(mkt_links.get(HUMAN_RESOURCES_SHEET_LINK_SECRET_KEY, "")).strip()  # type: ignore[attr-defined]
+            if link and "..." not in link:
+                return link
+
     # 1) Streamlit Secrets
     try:
         raw = st.secrets.get(DEPARTMENT_SHEET_LINKS_SECRET_KEY, {})
@@ -1933,7 +1950,7 @@ def app_view(auth_map: dict, master_pw: str) -> None:
         elif normalize_name(dept) == normalize_name(HUMAN_RESOURCES_DEPT):
             st.warning(
                 "HR sheet link not configured. "
-                f"Add `{HUMAN_RESOURCES_SHEET_LINK_SECRET_KEY}` in Streamlit Cloud Secrets."
+                f"Add `{HUMAN_RESOURCES_SHEET_LINK_SECRET_KEY}` in Streamlit Secrets, or add 'HR.xlsx' under [MKT_SHEETS_LINKS]."
             )
 
         current_payload = render_department_form(dept, current_payload, edit_locked=edit_locked)
