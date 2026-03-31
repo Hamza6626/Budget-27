@@ -29,6 +29,11 @@ streamlit run budget_portal.py
 - First priority: Streamlit Secrets (`MASTER_PASSWORD` and `[DEPARTMENT_PASSWORDS]`)
 - Fallback (local only): `DepartmentPasswords_CONFIDENTIAL.csv`
 
+Optional:
+
+- Marketing sheets can be opened via OneDrive Excel Online links using `[MKT_SHEETS_LINKS]`.
+- Production is a combined login (domain: "Alaoudin / Usman BK") that uses a single `PRODUCTION` password in `[DEPARTMENT_PASSWORDS]` and can show a constant `PRODUCTION_SHEET_LINK`.
+
 ## Notes
 
 - This is macro-free and works even when VBA is disabled.
@@ -55,6 +60,8 @@ create table if not exists public.budget_entries (
 
 - `MASTER_PASSWORD`
 - `[DEPARTMENT_PASSWORDS]` map for all departments
+- `[MKT_SHEETS_LINKS]` map (optional)
+- `PRODUCTION_SHEET_LINK` (optional)
 - `SUPABASE_URL`
 - `SUPABASE_KEY`
 

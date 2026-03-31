@@ -67,6 +67,11 @@ SUPPLY_CHAIN_SEGMENTS = [
     "MATERIAL MANAGEMENT & CONTROL",
 ]
 
+# Combined login for all departments under the domain "Alaoudin / Usman BK".
+PRODUCTION_DOMAIN = "PRODUCTION"
+PRODUCTION_PARENT_DOMAIN_NAME = "Alaoudin / Usman BK"
+PRODUCTION_SHEET_LINK_SECRET_KEY = "PRODUCTION_SHEET_LINK"
+
 MARKETING_DEPT = "MARKETING & MERCHANDIZING"
 PPC_DEPT = "PPC & WIP"
 
@@ -219,7 +224,46 @@ def load_department_domains() -> dict[str, str]:
         for seg in SUPPLY_CHAIN_SEGMENTS:
             mapping.setdefault(seg, sc_dom)
 
+    # Ensure PRODUCTION is visible under its parent domain.
+    mapping.setdefault(PRODUCTION_DOMAIN, PRODUCTION_PARENT_DOMAIN_NAME)
+
     return mapping
+
+
+def production_departments(dept_domains: dict[str, str], auth_map: dict) -> list[str]:
+    """All departments that belong to the Production combined login.
+
+    Definition: any department whose domain equals PRODUCTION_PARENT_DOMAIN_NAME.
+    Only include departments that exist in auth_map.
+    """
+    out: list[str] = []
+    for dept, dom in (dept_domains or {}).items():
+        d = normalize_name(dept)
+        if d in {PRODUCTION_DOMAIN, SUPPLY_CHAIN_DOMAIN, *SUPPLY_CHAIN_SEGMENTS}:
+            continue
+        if d in REMOVED_DEPARTMENTS:
+            continue
+        if _normalize_domain(dom) != _normalize_domain(PRODUCTION_PARENT_DOMAIN_NAME):
+            continue
+        if d not in auth_map:
+            continue
+        out.append(d)
+    return sorted(out)
+
+
+def production_sheet_link() -> str:
+    try:
+        link = str(st.secrets.get(PRODUCTION_SHEET_LINK_SECRET_KEY, "")).strip()
+        if link:
+            return link
+
+        # Back-compat: allow storing this link inside the same dict as MKT links.
+        mkt_links = st.secrets.get(MKT_SHEETS_LINKS_SECRET_KEY, {})
+        if isinstance(mkt_links, dict):
+            return str(mkt_links.get(PRODUCTION_SHEET_LINK_SECRET_KEY, "")).strip()
+    except Exception:
+        pass
+    return ""
 
 
 def department_domain_for_login(dept_domains: dict[str, str], login_as: str) -> str:
@@ -232,6 +276,8 @@ def department_domain_for_login(dept_domains: dict[str, str], login_as: str) -> 
         if len(seg_domains) == 1:
             return next(iter(seg_domains))
         return ""
+    if login_as == PRODUCTION_DOMAIN:
+        return str(dept_domains.get(PRODUCTION_DOMAIN, PRODUCTION_PARENT_DOMAIN_NAME)).strip()
     return str(dept_domains.get(login_as, "")).strip()
 
 
@@ -239,18 +285,31 @@ def supply_chain_enabled(auth_map: dict) -> bool:
     return SUPPLY_CHAIN_DOMAIN in auth_map
 
 
-def login_domains(auth_map: dict) -> list[str]:
+def production_enabled(auth_map: dict) -> bool:
+    return PRODUCTION_DOMAIN in auth_map
+
+
+def login_domains(auth_map: dict, dept_domains: dict[str, str] | None = None) -> list[str]:
     domains = sorted(auth_map.keys())
     if supply_chain_enabled(auth_map):
         domains = [d for d in domains if d not in SUPPLY_CHAIN_SEGMENTS and d != SUPPLY_CHAIN_DOMAIN]
         domains.append(SUPPLY_CHAIN_DOMAIN)
         domains = sorted(domains)
+
+    if production_enabled(auth_map):
+        # Hide production departments from direct login; show single PRODUCTION entry.
+        prod_depts = production_departments(dept_domains or {}, auth_map) if dept_domains else []
+        domains = [d for d in domains if d not in prod_depts and d != PRODUCTION_DOMAIN]
+        domains.append(PRODUCTION_DOMAIN)
+        domains = sorted(dict.fromkeys(domains))
     return domains
 
 
 def check_domain_password(auth_map: dict, domain: str, password: str) -> bool:
     if domain == SUPPLY_CHAIN_DOMAIN and supply_chain_enabled(auth_map):
         return auth_map.get(SUPPLY_CHAIN_DOMAIN) == password
+    if domain == PRODUCTION_DOMAIN and production_enabled(auth_map):
+        return auth_map.get(PRODUCTION_DOMAIN) == password
     return auth_map.get(domain) == password
 
 
@@ -1504,8 +1563,8 @@ def master_documents_rows(all_payloads: dict) -> list[dict]:
 def login_view(auth_map: dict, master_pw: str) -> None:
     render_header(compact=False)
 
-    departments = login_domains(auth_map)
     dept_domains = load_department_domains()
+    departments = login_domains(auth_map, dept_domains=dept_domains)
     domain_options = sorted({
         *{
             department_domain_for_login(dept_domains, d)
@@ -1544,6 +1603,9 @@ def login_view(auth_map: dict, master_pw: str) -> None:
                     if department_domain_for_login(dept_domains, d) == selected_domain
                 ]
 
+                if selected_domain == PRODUCTION_PARENT_DOMAIN_NAME and production_enabled(auth_map):
+                    visible_departments = [PRODUCTION_DOMAIN]
+
                 login_options = visible_departments
                 if selected_domain == MASTER_DOMAIN_NAME:
                     login_options = ["MASTER"] + login_options
@@ -1576,6 +1638,10 @@ def login_view(auth_map: dict, master_pw: str) -> None:
         if login_as == SUPPLY_CHAIN_DOMAIN and supply_chain_enabled(auth_map):
             st.session_state.supply_chain_segment = SUPPLY_CHAIN_SEGMENTS[0]
             st.session_state.department = st.session_state.supply_chain_segment
+        elif login_as == PRODUCTION_DOMAIN and production_enabled(auth_map):
+            prod = production_departments(dept_domains, auth_map)
+            st.session_state.production_department = prod[0] if prod else None
+            st.session_state.department = st.session_state.production_department or login_as
         else:
             st.session_state.department = login_as
         st.rerun()
@@ -1586,10 +1652,12 @@ def login_view(auth_map: dict, master_pw: str) -> None:
 def app_view(auth_map: dict, master_pw: str) -> None:
     all_departments = sorted(
         {
-            *[d for d in auth_map.keys() if d != SUPPLY_CHAIN_DOMAIN],
+            *[d for d in auth_map.keys() if d not in {SUPPLY_CHAIN_DOMAIN, PRODUCTION_DOMAIN}],
             *SUPPLY_CHAIN_SEGMENTS,
         }
     )
+
+    dept_domains = load_department_domains()
 
     settings = load_app_settings()
     edit_locked = bool(settings.get("edit_locked", False))
@@ -1615,6 +1683,25 @@ def app_view(auth_map: dict, master_pw: str) -> None:
                     st.rerun()
 
                 st.caption(f"Active: {st.session_state.department}")
+
+            if domain == PRODUCTION_DOMAIN and production_enabled(auth_map):
+                prod_depts = production_departments(dept_domains, auth_map)
+                if not prod_depts:
+                    st.warning("No departments found under Production domain mapping.")
+                else:
+                    current = st.session_state.get("production_department")
+                    idx = prod_depts.index(current) if current in prod_depts else 0
+                    chosen = st.selectbox(
+                        "Department",
+                        options=prod_depts,
+                        index=idx,
+                    )
+                    if chosen != st.session_state.get("production_department"):
+                        st.session_state.production_department = chosen
+                        st.session_state.department = chosen
+                        st.rerun()
+
+                    st.caption(f"Active: {st.session_state.department}")
             if edit_locked:
                 st.warning("Editing is locked")
             if view_locked:
@@ -1675,6 +1762,14 @@ def app_view(auth_map: dict, master_pw: str) -> None:
             st.session_state[work_key] = load_payload(dept)
 
         current_payload = st.session_state[work_key]
+
+        if st.session_state.get("department_domain") == PRODUCTION_DOMAIN:
+            link = production_sheet_link()
+            if link:
+                st.link_button("Open Production.xlsx (OneDrive)", link)
+            else:
+                st.warning("Production.xlsx link not configured. Add PRODUCTION_SHEET_LINK in Streamlit Secrets.")
+
         current_payload = render_department_form(dept, current_payload, edit_locked=edit_locked)
         st.session_state[work_key] = current_payload
 
