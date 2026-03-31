@@ -66,7 +66,7 @@ SUPPLY_CHAIN_SEGMENTS = [
 
 
 def supply_chain_enabled(auth_map: dict) -> bool:
-    return all(seg in auth_map for seg in SUPPLY_CHAIN_SEGMENTS)
+    return SUPPLY_CHAIN_DOMAIN in auth_map
 
 
 def login_domains(auth_map: dict) -> list[str]:
@@ -80,9 +80,7 @@ def login_domains(auth_map: dict) -> list[str]:
 
 def check_domain_password(auth_map: dict, domain: str, password: str) -> bool:
     if domain == SUPPLY_CHAIN_DOMAIN and supply_chain_enabled(auth_map):
-        # Allow either an explicit SUPPLY CHAIN password (if configured) OR any of the 3 segment passwords.
-        candidates = [auth_map.get(SUPPLY_CHAIN_DOMAIN, "")] + [auth_map.get(seg, "") for seg in SUPPLY_CHAIN_SEGMENTS]
-        return password in [c for c in candidates if c]
+        return auth_map.get(SUPPLY_CHAIN_DOMAIN) == password
     return auth_map.get(domain) == password
 
 
@@ -1007,7 +1005,12 @@ def login_view(auth_map: dict, master_pw: str) -> None:
 
 
 def app_view(auth_map: dict, master_pw: str) -> None:
-    all_departments = sorted([d for d in auth_map.keys() if d != SUPPLY_CHAIN_DOMAIN])
+    all_departments = sorted(
+        {
+            *[d for d in auth_map.keys() if d != SUPPLY_CHAIN_DOMAIN],
+            *SUPPLY_CHAIN_SEGMENTS,
+        }
+    )
 
     settings = load_app_settings()
     edit_locked = bool(settings.get("edit_locked", False))
