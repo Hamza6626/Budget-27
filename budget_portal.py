@@ -1827,6 +1827,11 @@ def app_view(auth_map: dict, master_pw: str) -> None:
                         st.rerun()
 
                     st.caption(f"Active: {st.session_state.department}")
+
+            active_dept = st.session_state.get("department")
+            dept_link = department_sheet_link(active_dept) if active_dept else ""
+            if dept_link:
+                st.link_button("Open Department sheet (OneDrive)", dept_link)
             if edit_locked:
                 st.warning("Editing is locked")
             if view_locked:
