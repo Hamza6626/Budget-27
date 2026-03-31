@@ -68,3 +68,5 @@ create table if not exists public.budget_entries (
 4. Redeploy/restart app.
 
 When `SUPABASE_URL` and `SUPABASE_KEY` are present, the app uses Supabase and data stays available across restarts and Git pushes.
+
+Note: If you use a publishable/anon key, make sure the `budget_entries` table permissions are set correctly (RLS disabled for that table, or RLS policies added to allow read/write). Otherwise the app will show a Supabase read/write error.

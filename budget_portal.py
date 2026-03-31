@@ -479,7 +479,11 @@ def save_generic_record(key: str, payload: dict) -> None:
     payload["updated_at"] = now
 
     if USE_SUPABASE:
-        _supabase_upsert_payload(key, payload, now)
+        try:
+            _supabase_upsert_payload(key, payload, now)
+        except Exception as e:
+            st.error("Supabase write failed. Please check SUPABASE_URL/SUPABASE_KEY and table permissions (RLS/policies).")
+            st.caption(str(e)[:300])
         return
 
     conn = sqlite3.connect(DB_PATH)
@@ -498,7 +502,12 @@ def save_generic_record(key: str, payload: dict) -> None:
 
 def load_generic_record(key: str, default: dict | None = None) -> dict:
     if USE_SUPABASE:
-        raw = _supabase_get_payload(key)
+        try:
+            raw = _supabase_get_payload(key)
+        except Exception as e:
+            st.error("Supabase read failed. Please check SUPABASE_URL/SUPABASE_KEY and table permissions (RLS/policies).")
+            st.caption(str(e)[:300])
+            return dict(default or {})
         if not raw:
             return dict(default or {})
         if isinstance(raw, str):
