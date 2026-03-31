@@ -3,15 +3,17 @@ import sqlite3
 import uuid
 import base64
 import os
+import re
+import zipfile
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote
+import xml.etree.ElementTree as ET
 
 import pandas as pd
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
@@ -55,8 +57,6 @@ ALLOWED_ATTACHMENT_TYPES = {
     "image/png",
     "image/jpeg",
 }
-
-EMBED_SHEETS_SECRET_KEY = "EMBED_SHEETS"
 
 TRAVEL_COST_KEYS = ["Food", "Lodging", "Travelling Fare"]
 
@@ -336,25 +336,285 @@ def attachment_label(att: dict) -> str:
     return f"{att.get('name', 'document')} ({size_kb} KB)"
 
 
-def get_embed_sheet_url(doc_file: str) -> str:
-    """Fetch an Excel Online embed URL from Streamlit Secrets.
+def _sheet_state_key(doc_file: str, *, shared: bool, dept: str | None) -> str:
+    base = f"__SHEET_STATE__{doc_file}__"
+    if shared:
+        return base + "SHARED"
+    return base + normalize_name(dept or "")
 
-    Expected secrets shape:
-      [EMBED_SHEETS]
-      "Working Capital.xlsx" = "https://.../embed?..."
-      "Sales Plan.xlsx" = "https://.../embed?..."
-    """
+
+def save_generic_record(key: str, payload: dict) -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    payload = dict(payload or {})
+    payload["updated_at"] = now
+
+    if USE_SUPABASE:
+        _supabase_upsert_payload(key, payload, now)
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """
+        INSERT INTO budget_entries (department, payload_json, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(department)
+        DO UPDATE SET payload_json=excluded.payload_json, updated_at=excluded.updated_at
+        """,
+        (key, json.dumps(payload), now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_generic_record(key: str, default: dict | None = None) -> dict:
+    if USE_SUPABASE:
+        raw = _supabase_get_payload(key)
+        if not raw:
+            return dict(default or {})
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                return dict(default or {})
+        if isinstance(raw, dict):
+            return raw
+        return dict(default or {})
+
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT payload_json FROM budget_entries WHERE department = ?", (key,)
+    ).fetchone()
+    conn.close()
+
+    if not row:
+        return dict(default or {})
     try:
-        raw = st.secrets.get(EMBED_SHEETS_SECRET_KEY, {})
-        items = dict(raw).items()
+        raw = json.loads(row[0])
     except Exception:
-        items = []
+        return dict(default or {})
+    if isinstance(raw, dict):
+        return raw
+    return dict(default or {})
 
-    wanted = doc_file.strip().lower()
-    for k, v in items:
-        if str(k).strip().lower() == wanted:
-            return str(v).strip()
-    return ""
+
+_XLSX_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+_XLSX_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+_XLSX_NS = {"m": _XLSX_MAIN_NS, "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships"}
+
+
+def _xlsx_col_to_int(col: str) -> int:
+    out = 0
+    for ch in col:
+        out = out * 26 + (ord(ch) - 64)
+    return out
+
+
+def _xlsx_split_cell(cell_ref: str) -> tuple[str, int] | None:
+    m = re.fullmatch(r"([A-Z]+)(\d+)", str(cell_ref or "").strip().upper())
+    if not m:
+        return None
+    return m.group(1), int(m.group(2))
+
+
+def _xlsx_sheet_paths(xlsx_bytes: bytes) -> dict[str, str]:
+    with zipfile.ZipFile(BytesIO(xlsx_bytes), "r") as z:
+        wb_xml = z.read("xl/workbook.xml")
+        rels_xml = z.read("xl/_rels/workbook.xml.rels")
+
+    wb_root = ET.fromstring(wb_xml)
+    rels_root = ET.fromstring(rels_xml)
+
+    rid_to_target: dict[str, str] = {}
+    for rel in rels_root.findall(f"{{{_XLSX_REL_NS}}}Relationship"):
+        rid = rel.attrib.get("Id")
+        tgt = rel.attrib.get("Target")
+        if rid and tgt:
+            rid_to_target[rid] = tgt
+
+    out: dict[str, str] = {}
+    sheets = wb_root.find("m:sheets", _XLSX_NS)
+    if sheets is None:
+        return out
+    for sh in sheets.findall("m:sheet", _XLSX_NS):
+        name = sh.attrib.get("name")
+        rid = sh.attrib.get(f"{{{_XLSX_NS['r']}}}id")
+        if not name or not rid:
+            continue
+        target = rid_to_target.get(rid)
+        if not target:
+            continue
+        out[name] = "xl/" + target.lstrip("/")
+    return out
+
+
+def _xlsx_load_shared_strings(xlsx_bytes: bytes) -> tuple[list[str], dict[str, int]]:
+    with zipfile.ZipFile(BytesIO(xlsx_bytes), "r") as z:
+        sst_xml = z.read("xl/sharedStrings.xml")
+
+    root = ET.fromstring(sst_xml)
+    strings: list[str] = []
+    index: dict[str, int] = {}
+    for si in root.findall("m:si", _XLSX_NS):
+        # Handle both plain and rich text.
+        ts = si.findall("m:t", _XLSX_NS)
+        if not ts:
+            ts = si.findall("m:r/m:t", _XLSX_NS)
+        text = "".join((t.text or "") for t in ts)
+        index.setdefault(text, len(strings))
+        strings.append(text)
+    return strings, index
+
+
+def _xlsx_append_shared_string(sst_root: ET.Element, value: str) -> int:
+    value = str(value)
+    sis = sst_root.findall("m:si", _XLSX_NS)
+    idx = len(sis)
+    si = ET.SubElement(sst_root, f"{{{_XLSX_MAIN_NS}}}si")
+    t = ET.SubElement(si, f"{{{_XLSX_MAIN_NS}}}t")
+    if value.strip() != value:
+        t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    t.text = value
+    sst_root.set("count", str(int(sst_root.attrib.get("count", "0")) + 1))
+    sst_root.set("uniqueCount", str(int(sst_root.attrib.get("uniqueCount", str(idx))) + 1))
+    return idx
+
+
+def _xlsx_set_cell_value(
+    sheet_root: ET.Element,
+    *,
+    cell_ref: str,
+    value,
+    sst_root: ET.Element,
+    sst_index: dict[str, int],
+) -> None:
+    split = _xlsx_split_cell(cell_ref)
+    if not split:
+        return
+    col, row_num = split
+    sheet_data = sheet_root.find("m:sheetData", _XLSX_NS)
+    if sheet_data is None:
+        return
+
+    # Find or create row.
+    row_el = None
+    for r in sheet_data.findall("m:row", _XLSX_NS):
+        if int(r.attrib.get("r", "0")) == row_num:
+            row_el = r
+            break
+    if row_el is None:
+        row_el = ET.Element(f"{{{_XLSX_MAIN_NS}}}row", {"r": str(row_num)})
+        # Insert rows in order.
+        inserted = False
+        for i, r in enumerate(sheet_data.findall("m:row", _XLSX_NS)):
+            if int(r.attrib.get("r", "0")) > row_num:
+                sheet_data.insert(i, row_el)
+                inserted = True
+                break
+        if not inserted:
+            sheet_data.append(row_el)
+
+    # Find or create cell.
+    cell_el = None
+    existing_cells = row_el.findall("m:c", _XLSX_NS)
+    for c in existing_cells:
+        if c.attrib.get("r") == cell_ref:
+            cell_el = c
+            break
+    if cell_el is None:
+        cell_el = ET.Element(f"{{{_XLSX_MAIN_NS}}}c", {"r": cell_ref})
+        target_col_i = _xlsx_col_to_int(col)
+        inserted = False
+        for i, c in enumerate(existing_cells):
+            ref = c.attrib.get("r", "")
+            sp = _xlsx_split_cell(ref)
+            if not sp:
+                continue
+            c_col, _ = sp
+            if _xlsx_col_to_int(c_col) > target_col_i:
+                row_el.insert(i, cell_el)
+                inserted = True
+                break
+        if not inserted:
+            row_el.append(cell_el)
+
+    # Never overwrite formulas.
+    if cell_el.find("m:f", _XLSX_NS) is not None:
+        return
+
+    # Clear existing v.
+    for v_el in cell_el.findall("m:v", _XLSX_NS):
+        cell_el.remove(v_el)
+
+    if value is None or value == "":
+        # Clear the cell.
+        cell_el.attrib.pop("t", None)
+        return
+
+    if isinstance(value, bool):
+        value = 1 if value else 0
+
+    if isinstance(value, (int, float)):
+        cell_el.attrib.pop("t", None)
+        v_el = ET.SubElement(cell_el, f"{{{_XLSX_MAIN_NS}}}v")
+        v_el.text = str(value)
+        return
+
+    # Treat as string.
+    text = str(value)
+    idx = sst_index.get(text)
+    if idx is None:
+        idx = _xlsx_append_shared_string(sst_root, text)
+        sst_index[text] = idx
+    cell_el.set("t", "s")
+    v_el = ET.SubElement(cell_el, f"{{{_XLSX_MAIN_NS}}}v")
+    v_el.text = str(idx)
+
+
+def xlsx_patch_values(template_bytes: bytes, updates: dict[str, dict[str, object]]) -> bytes:
+    """Patch specific cell values in an XLSX *without* rewriting the workbook.
+
+    This preserves Excel tables, formatting, and formulas far better than saving
+    through openpyxl.
+    """
+    if not updates:
+        return template_bytes
+
+    sheet_paths = _xlsx_sheet_paths(template_bytes)
+
+    with zipfile.ZipFile(BytesIO(template_bytes), "r") as zin:
+        original = {name: zin.read(name) for name in zin.namelist()}
+
+    sst_root = ET.fromstring(original.get("xl/sharedStrings.xml", b""))
+    sst_strings, sst_index = _xlsx_load_shared_strings(template_bytes)
+    # Ensure index has all existing strings.
+    for i, s in enumerate(sst_strings):
+        sst_index.setdefault(s, i)
+
+    for sheet_name, cell_map in updates.items():
+        path = sheet_paths.get(sheet_name)
+        if not path or path not in original:
+            continue
+        if not isinstance(cell_map, dict) or not cell_map:
+            continue
+
+        root = ET.fromstring(original[path])
+        for cell_ref, value in cell_map.items():
+            _xlsx_set_cell_value(
+                root,
+                cell_ref=str(cell_ref),
+                value=value,
+                sst_root=sst_root,
+                sst_index=sst_index,
+            )
+        original[path] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+    original["xl/sharedStrings.xml"] = ET.tostring(sst_root, encoding="utf-8", xml_declaration=True)
+
+    out_buf = BytesIO()
+    with zipfile.ZipFile(out_buf, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+        for name, data in original.items():
+            zout.writestr(name, data)
+    return out_buf.getvalue()
 
 
 def can_access_shared_sheet(role: str, dept: str | None, dept_domain: str | None, doc_file: str) -> bool:
@@ -371,10 +631,10 @@ def can_access_shared_sheet(role: str, dept: str | None, dept_domain: str | None
     if not cfg.get("shared", False):
         return dept == MARKETING_DEPT
 
-    # Working Capital: Marketing, PPC & WIP, Supply Chain domain.
+    # Working Capital: Marketing, PPC & WIP, Supply Chain (all segments).
     if dept == MARKETING_DEPT or dept == PPC_DEPT:
         return True
-    if (dept_domain or "").strip().upper() == SUPPLY_CHAIN_DOMAIN:
+    if dept == SUPPLY_CHAIN_DOMAIN or dept in SUPPLY_CHAIN_SEGMENTS:
         return True
     return False
 
@@ -395,29 +655,213 @@ def render_shared_sheets_panel(edit_locked: bool, view_locked: bool) -> None:
     if not visible_files:
         return
 
-    st.subheader("Sheets")
-    st.caption("These sheets open inside the portal in Excel Online (formats & formulas unchanged).")
+    # Render the Marketing Excel heads (Sales Plan / Working Capital) inline like other heads.
+
+    def _template_bytes(doc_file: str) -> bytes:
+        path = (MKT_TEMPLATES_DIR / doc_file)
+        return path.read_bytes()
+
+    def _owner_dept_for_doc(doc_file: str) -> str | None:
+        # Non-shared MKT docs are owned by Marketing, even when viewed by Master.
+        cfg = MKT_TEMPLATE_FILES.get(doc_file, {})
+        if not cfg.get("shared", False):
+            return MARKETING_DEPT
+        return dept
+
+    def _load_sheet_state(doc_file: str, *, shared: bool) -> dict:
+        key = _sheet_state_key(doc_file, shared=shared, dept=_owner_dept_for_doc(doc_file))
+        return load_generic_record(key, default={"cells": {}})
+
+    def _save_sheet_state(doc_file: str, *, shared: bool, cells: dict[str, dict[str, object]]) -> None:
+        key = _sheet_state_key(doc_file, shared=shared, dept=_owner_dept_for_doc(doc_file))
+        save_generic_record(key, {"cells": cells})
+
+    def _download_bytes(doc_file: str, *, shared: bool) -> bytes:
+        state = _load_sheet_state(doc_file, shared=shared)
+        cells = state.get("cells") if isinstance(state, dict) else {}
+        if not isinstance(cells, dict):
+            cells = {}
+        return xlsx_patch_values(_template_bytes(doc_file), cells)
+
+    def _render_working_capital_editor(disabled: bool) -> dict[str, dict[str, object]]:
+        from openpyxl import load_workbook
+
+        state = _load_sheet_state("Working Capital.xlsx", shared=True)
+        cells = state.get("cells", {}) if isinstance(state, dict) else {}
+        if not isinstance(cells, dict):
+            cells = {}
+        sheet_cells = cells.get("Fund Requirement", {}) if isinstance(cells.get("Fund Requirement"), dict) else {}
+
+        wb = load_workbook(BytesIO(_template_bytes("Working Capital.xlsx")), data_only=False)
+        ws = wb["Fund Requirement"]
+
+        # Month columns are row 1, columns B..M.
+        month_cols = []
+        for col in range(2, 14):
+            v = ws.cell(1, col).value
+            if v is None:
+                continue
+            try:
+                label = v.strftime("%b-%y")
+            except Exception:
+                label = str(v)
+            month_cols.append((col, label))
+
+        rows = []
+        row_map: list[tuple[int, str]] = []
+        for r in range(2, ws.max_row + 1):
+            label = ws.cell(r, 1).value
+            if label is None or str(label).strip() == "":
+                continue
+            label_s = str(label)
+            rec = {"Metric": label_s}
+            for col, mlabel in month_cols:
+                addr = f"{chr(64+col)}{r}"  # B..M
+                if addr in sheet_cells:
+                    rec[mlabel] = sheet_cells.get(addr)
+                else:
+                    rec[mlabel] = ws.cell(r, col).value
+            rows.append(rec)
+            row_map.append((r, label_s))
+
+        df = pd.DataFrame(rows)
+        edited = st.data_editor(
+            df,
+            disabled=disabled,
+            num_rows="fixed",
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        new_sheet_cells: dict[str, object] = {}
+        for i, (r, _label) in enumerate(row_map):
+            if i >= len(edited):
+                continue
+            for col, mlabel in month_cols:
+                addr = f"{chr(64+col)}{r}"
+                val = edited.iloc[i].get(mlabel)
+                if val is None or val == "":
+                    continue
+                try:
+                    new_sheet_cells[addr] = float(val)
+                except Exception:
+                    new_sheet_cells[addr] = str(val)
+
+        out = dict(cells)
+        out["Fund Requirement"] = new_sheet_cells
+        return out
+
+    def _render_sales_plan_editor(disabled: bool) -> dict[str, dict[str, object]]:
+        from openpyxl import load_workbook
+
+        state = _load_sheet_state("Sales Plan.xlsx", shared=False)
+        cells = state.get("cells", {}) if isinstance(state, dict) else {}
+        if not isinstance(cells, dict):
+            cells = {}
+        sheet_cells = cells.get("Month Wise Sales Qty", {}) if isinstance(cells.get("Month Wise Sales Qty"), dict) else {}
+
+        wb = load_workbook(BytesIO(_template_bytes("Sales Plan.xlsx")), data_only=False)
+        ws = wb["Month Wise Sales Qty"]
+
+        month_cols = []
+        # D..O are months in this template.
+        for col in range(4, 16):
+            v = ws.cell(1, col).value
+            try:
+                label = v.strftime("%b-%y")
+            except Exception:
+                label = str(v)
+            month_cols.append((col, label))
+
+        rows = []
+        row_nums: list[int] = []
+        for r in range(2, ws.max_row + 1):
+            # Include all existing rows in the template grid.
+            rec = {
+                "TEAM LEAD": sheet_cells.get(f"A{r}", ws.cell(r, 1).value),
+                "WASH TYPE": sheet_cells.get(f"B{r}", ws.cell(r, 2).value),
+                "CUSTOMER": sheet_cells.get(f"C{r}", ws.cell(r, 3).value),
+            }
+            for col, mlabel in month_cols:
+                addr = f"{chr(64+col)}{r}"
+                rec[mlabel] = sheet_cells.get(addr, ws.cell(r, col).value)
+            rows.append(rec)
+            row_nums.append(r)
+
+        df = pd.DataFrame(rows)
+        edited = st.data_editor(
+            df,
+            disabled=disabled,
+            num_rows="fixed",
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        new_sheet_cells: dict[str, object] = {}
+        for i, r in enumerate(row_nums):
+            if i >= len(edited):
+                continue
+            a = edited.iloc[i].get("TEAM LEAD")
+            b = edited.iloc[i].get("WASH TYPE")
+            c = edited.iloc[i].get("CUSTOMER")
+            if a not in (None, ""):
+                new_sheet_cells[f"A{r}"] = str(a)
+            if b not in (None, ""):
+                new_sheet_cells[f"B{r}"] = str(b)
+            if c not in (None, ""):
+                new_sheet_cells[f"C{r}"] = str(c)
+            for col, mlabel in month_cols:
+                addr = f"{chr(64+col)}{r}"
+                val = edited.iloc[i].get(mlabel)
+                if val is None or val == "":
+                    continue
+                new_sheet_cells[addr] = _to_float(val)
+
+        out = dict(cells)
+        out["Month Wise Sales Qty"] = new_sheet_cells
+        return out
 
     for doc_file in visible_files:
         cfg = MKT_TEMPLATE_FILES[doc_file]
         title = cfg.get("title", doc_file)
         is_shared = bool(cfg.get("shared", False))
-        url = get_embed_sheet_url(doc_file)
 
         with st.expander(f"{title}{' (Shared)' if is_shared else ''}", expanded=False):
-            if not url:
-                st.error("Sheet link not configured. Add an Excel embed URL in Streamlit Secrets under [EMBED_SHEETS].")
-                st.code(
-                    """[EMBED_SHEETS]\n\"Working Capital.xlsx\" = \"https://.../embed?...\"\n\"Sales Plan.xlsx\" = \"https://.../embed?...\"\n""",
-                    language="toml",
+            disabled = bool(edit_locked and role != "master")
+            if disabled:
+                st.info("Editing is currently locked by Master.")
+
+            if doc_file == "Working Capital.xlsx":
+                st.markdown("### Working Capital inputs")
+                edited_cells = _render_working_capital_editor(disabled)
+                if not disabled and st.button("Save Working Capital", key="save_wc"):
+                    _save_sheet_state("Working Capital.xlsx", shared=True, cells=edited_cells)
+                    st.success("Saved.")
+                st.download_button(
+                    "Download Working Capital.xlsx",
+                    data=_download_bytes("Working Capital.xlsx", shared=True),
+                    file_name="Working Capital.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
-                continue
-
-            if edit_locked and role != "master":
-                st.info("Note: Department editing is locked in the portal. Sheet editing permissions are controlled by OneDrive/SharePoint.")
-
-            st.markdown(f"Open in new tab: {url}")
-            components.iframe(url, height=720, scrolling=True)
+            elif doc_file == "Sales Plan.xlsx":
+                st.markdown("### Sales Plan inputs")
+                edited_cells = _render_sales_plan_editor(disabled)
+                if not disabled and st.button("Save Sales Plan", key="save_sp"):
+                    _save_sheet_state("Sales Plan.xlsx", shared=False, cells=edited_cells)
+                    st.success("Saved.")
+                st.download_button(
+                    "Download Sales Plan.xlsx",
+                    data=_download_bytes("Sales Plan.xlsx", shared=False),
+                    file_name="Sales Plan.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            else:
+                st.download_button(
+                    f"Download {doc_file}",
+                    data=_download_bytes(doc_file, shared=is_shared),
+                    file_name=doc_file,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
 
 
 def _is_duplicate_attachment(item: dict, uploaded_name: str, uploaded_size: int) -> bool:
@@ -1397,12 +1841,8 @@ def app_view(auth_map: dict, master_pw: str) -> None:
         current_payload = render_department_form(dept, current_payload, edit_locked=edit_locked)
         st.session_state[work_key] = current_payload
 
-        st.subheader("Travel ROI Snapshot")
-        roi_df = build_travel_roi_report(current_payload)
-        if not roi_df.empty:
-            st.dataframe(roi_df, use_container_width=True)
-        else:
-            st.info("No travel subheads found yet.")
+        # Marketing Excel heads (treated like other heads)
+        render_shared_sheets_panel(edit_locked=edit_locked, view_locked=view_locked)
 
         col1, col2 = st.columns([1, 1])
         with col1:
@@ -1422,8 +1862,6 @@ def app_view(auth_map: dict, master_pw: str) -> None:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
-        render_shared_sheets_panel(edit_locked=edit_locked, view_locked=view_locked)
-
     if st.session_state.role == "master":
         all_payloads = load_all_payloads(all_departments)
 
@@ -1438,19 +1876,6 @@ def app_view(auth_map: dict, master_pw: str) -> None:
         st.subheader("Detailed Consolidated Summary")
         df_sum = build_summary_dataframe(all_payloads, all_departments)
         st.dataframe(df_sum, use_container_width=True, height=600)
-
-        st.subheader("Travel ROI Summary")
-        travel_rows = []
-        for dept in all_departments:
-            roi_df = build_travel_roi_report(all_payloads[dept])
-            if roi_df.empty:
-                continue
-            roi_df.insert(0, "Department", dept)
-            travel_rows.append(roi_df)
-        if travel_rows:
-            st.dataframe(pd.concat(travel_rows, ignore_index=True), use_container_width=True)
-        else:
-            st.info("No travel ROI data submitted yet.")
 
         st.subheader("Travel Supporting Documents")
         doc_rows = master_documents_rows(all_payloads)
