@@ -10,6 +10,7 @@ from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote
 import xml.etree.ElementTree as ET
+from collections.abc import Mapping
 
 import pandas as pd
 import requests
@@ -264,20 +265,20 @@ def production_sheet_link() -> str:
         # Also accept a TOML table like:
         # [PRODUCTION_SHEET_LINK]
         # "Production.xlsx" = "https://..."
-        if isinstance(raw, dict):
+        if isinstance(raw, Mapping):
             # Try common key first, else fall back to first string value.
             for k in ["Production.xlsx", "production.xlsx", "link"]:
-                v = raw.get(k)
+                v = raw.get(k)  # type: ignore[attr-defined]
                 if isinstance(v, str) and v.strip() and "..." not in v:
                     return v.strip()
-            for v in raw.values():
+            for v in raw.values():  # type: ignore[attr-defined]
                 if isinstance(v, str) and v.strip() and "..." not in v:
                     return v.strip()
 
         # Back-compat: allow storing this link inside the same dict as MKT links.
         mkt_links = st.secrets.get(MKT_SHEETS_LINKS_SECRET_KEY, {})
-        if isinstance(mkt_links, dict):
-            link = str(mkt_links.get(PRODUCTION_SHEET_LINK_SECRET_KEY, "")).strip()
+        if isinstance(mkt_links, Mapping):
+            link = str(mkt_links.get(PRODUCTION_SHEET_LINK_SECRET_KEY, "")).strip()  # type: ignore[attr-defined]
             if link and "..." not in link:
                 return link
 
@@ -300,7 +301,7 @@ def production_sheet_link_diagnostics() -> dict:
     diag["root_type"] = type(root_raw).__name__
     diag["root_present"] = root_raw is not None
     diag["root_str_len"] = len(root_raw.strip()) if isinstance(root_raw, str) else None
-    diag["root_dict_keys"] = sorted(list(root_raw.keys()))[:10] if isinstance(root_raw, dict) else None
+    diag["root_dict_keys"] = sorted(list(root_raw.keys()))[:10] if isinstance(root_raw, Mapping) else None
 
     env_val = os.getenv(PRODUCTION_SHEET_LINK_SECRET_KEY, "")
     diag["env_present"] = bool(env_val.strip())
@@ -311,10 +312,12 @@ def production_sheet_link_diagnostics() -> dict:
     except Exception as e:
         mkt_links = f"<error: {type(e).__name__}>"
     diag["mkt_type"] = type(mkt_links).__name__
-    if isinstance(mkt_links, dict):
+    if isinstance(mkt_links, Mapping):
         diag["mkt_has_prod_key"] = PRODUCTION_SHEET_LINK_SECRET_KEY in mkt_links
+        diag["mkt_keys_sample"] = sorted(list(mkt_links.keys()))[:10]
     else:
         diag["mkt_has_prod_key"] = None
+        diag["mkt_keys_sample"] = None
 
     return diag
 
