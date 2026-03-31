@@ -80,6 +80,8 @@ PRODUCTION_DOMAIN = "PRODUCTION"
 PRODUCTION_PARENT_DOMAIN_NAME = "Alaoudin / Usman BK"
 PRODUCTION_SHEET_LINK_SECRET_KEY = "PRODUCTION_SHEET_LINK"
 
+DEPARTMENT_SHEET_LINKS_SECRET_KEY = "DEPARTMENT_SHEET_LINKS"
+
 MARKETING_DEPT = "MARKETING & MERCHANDIZING"
 PPC_DEPT = "PPC & WIP"
 
@@ -301,6 +303,51 @@ def production_sheet_link() -> str:
             return link
     except Exception:
         pass
+    return ""
+
+
+def department_sheet_link(department: str) -> str:
+    """Optional OneDrive/SharePoint link for a department's shared sheet.
+
+    Load order:
+    1) Streamlit Secrets: [DEPARTMENT_SHEET_LINKS] table
+    2) Local CSV: DepartmentPasswords_CONFIDENTIAL.csv column OneDriveLink
+    """
+    dept_norm = normalize_name(str(department or ""))
+    if not dept_norm:
+        return ""
+
+    # 1) Streamlit Secrets
+    try:
+        raw = st.secrets.get(DEPARTMENT_SHEET_LINKS_SECRET_KEY, {})
+    except Exception:
+        raw = {}
+
+    if isinstance(raw, Mapping):
+        for k, v in raw.items():  # type: ignore[union-attr]
+            if normalize_name(str(k)) != dept_norm:
+                continue
+            if isinstance(v, str):
+                link = v.strip()
+                if link and "..." not in link:
+                    return link
+
+    # 2) Local CSV (optional)
+    if PASSWORD_CSV.exists():
+        try:
+            df = pd.read_csv(PASSWORD_CSV)
+            if "OneDriveLink" not in df.columns:
+                return ""
+            for _, row in df.iterrows():
+                dept = normalize_name(str(row.get("Department", "")))
+                if dept != dept_norm:
+                    continue
+                link = str(row.get("OneDriveLink", "")).strip()
+                if link and link.lower() != "nan":
+                    return link
+        except Exception:
+            return ""
+
     return ""
 
 
@@ -1852,6 +1899,10 @@ def app_view(auth_map: dict, master_pw: str) -> None:
                 )
                 with st.expander("Debug: why link not found?", expanded=False):
                     st.write(production_sheet_link_diagnostics())
+
+        dept_link = department_sheet_link(dept)
+        if dept_link:
+            st.link_button(f"Open {dept} sheet (OneDrive)", dept_link)
 
         current_payload = render_department_form(dept, current_payload, edit_locked=edit_locked)
         st.session_state[work_key] = current_payload
