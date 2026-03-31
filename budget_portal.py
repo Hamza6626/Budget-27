@@ -740,7 +740,7 @@ def render_shared_sheets_panel(edit_locked: bool, view_locked: bool) -> None:
             for col, mlabel in month_cols:
                 addr = f"{chr(64+col)}{r}"
                 val = edited.iloc[i].get(mlabel)
-                if val is None or val == "":
+                if val is None or (isinstance(val, str) and val == "") or pd.isna(val):
                     continue
                 try:
                     new_sheet_cells[addr] = float(val)
@@ -760,8 +760,13 @@ def render_shared_sheets_panel(edit_locked: bool, view_locked: bool) -> None:
             cells = {}
         sheet_cells = cells.get("Month Wise Sales Qty", {}) if isinstance(cells.get("Month Wise Sales Qty"), dict) else {}
 
-        wb = load_workbook(BytesIO(_template_bytes("Sales Plan.xlsx")), data_only=False)
-        ws = wb["Month Wise Sales Qty"]
+        tpl = _template_bytes("Sales Plan.xlsx")
+        # wb_formulas: used to detect formula cells so we don't treat them as inputs.
+        wb_formulas = load_workbook(BytesIO(tpl), data_only=False)
+        wb_values = load_workbook(BytesIO(tpl), data_only=True)
+
+        ws = wb_formulas["Month Wise Sales Qty"]
+        ws_val = wb_values["Month Wise Sales Qty"]
 
         month_cols = []
         # D..O are months in this template.
@@ -773,10 +778,35 @@ def render_shared_sheets_panel(edit_locked: bool, view_locked: bool) -> None:
                 label = str(v)
             month_cols.append((col, label))
 
-        rows = []
-        row_nums: list[int] = []
+        def _is_formula_cell(r: int, c: int) -> bool:
+            cell = ws.cell(r, c)
+            if cell.data_type == "f":
+                return True
+            v = cell.value
+            return isinstance(v, str) and v.startswith("=")
+
+        # Build two views:
+        # 1) Inputs: rows where month cells D..O are not formulas (real input grid)
+        # 2) Preview: cached values (no formula text) for all rows
+        input_rows = []
+        input_row_nums: list[int] = []
+        preview_rows = []
+
         for r in range(2, ws.max_row + 1):
-            # Include all existing rows in the template grid.
+            # Preview row (cached values from Excel)
+            prev = {
+                "TEAM LEAD": sheet_cells.get(f"A{r}", ws_val.cell(r, 1).value),
+                "WASH TYPE": sheet_cells.get(f"B{r}", ws_val.cell(r, 2).value),
+                "CUSTOMER": sheet_cells.get(f"C{r}", ws_val.cell(r, 3).value),
+            }
+            for col, mlabel in month_cols:
+                addr = f"{chr(64+col)}{r}"
+                prev[mlabel] = sheet_cells.get(addr, ws_val.cell(r, col).value)
+            preview_rows.append(prev)
+
+            # Input row: only if none of the month cells are formulas in the template.
+            if any(_is_formula_cell(r, col) for col, _ in month_cols):
+                continue
             rec = {
                 "TEAM LEAD": sheet_cells.get(f"A{r}", ws.cell(r, 1).value),
                 "WASH TYPE": sheet_cells.get(f"B{r}", ws.cell(r, 2).value),
@@ -785,37 +815,64 @@ def render_shared_sheets_panel(edit_locked: bool, view_locked: bool) -> None:
             for col, mlabel in month_cols:
                 addr = f"{chr(64+col)}{r}"
                 rec[mlabel] = sheet_cells.get(addr, ws.cell(r, col).value)
-            rows.append(rec)
-            row_nums.append(r)
+            input_rows.append(rec)
+            input_row_nums.append(r)
 
-        df = pd.DataFrame(rows)
-        edited = st.data_editor(
-            df,
-            disabled=disabled,
-            num_rows="fixed",
-            use_container_width=True,
-            hide_index=True,
-        )
+        tab_inputs, tab_preview, tab_costing = st.tabs([
+            "Month Wise Sales Qty (Inputs)",
+            "Month Wise Sales Qty (Preview)",
+            "Costing Grid (Preview)",
+        ])
 
         new_sheet_cells: dict[str, object] = {}
-        for i, r in enumerate(row_nums):
-            if i >= len(edited):
-                continue
-            a = edited.iloc[i].get("TEAM LEAD")
-            b = edited.iloc[i].get("WASH TYPE")
-            c = edited.iloc[i].get("CUSTOMER")
-            if a not in (None, ""):
-                new_sheet_cells[f"A{r}"] = str(a)
-            if b not in (None, ""):
-                new_sheet_cells[f"B{r}"] = str(b)
-            if c not in (None, ""):
-                new_sheet_cells[f"C{r}"] = str(c)
-            for col, mlabel in month_cols:
-                addr = f"{chr(64+col)}{r}"
-                val = edited.iloc[i].get(mlabel)
-                if val is None or val == "":
-                    continue
-                new_sheet_cells[addr] = _to_float(val)
+
+        with tab_inputs:
+            st.caption("Edit input rows here. Excel formulas recalculate when you open the downloaded file.")
+            if input_rows:
+                df_in = pd.DataFrame(input_rows)
+                edited = st.data_editor(
+                    df_in,
+                    disabled=disabled,
+                    num_rows="fixed",
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                for i, r in enumerate(input_row_nums):
+                    if i >= len(edited):
+                        continue
+                    a = edited.iloc[i].get("TEAM LEAD")
+                    b = edited.iloc[i].get("WASH TYPE")
+                    c = edited.iloc[i].get("CUSTOMER")
+                    if a is not None and not (isinstance(a, str) and a == "") and not pd.isna(a):
+                        new_sheet_cells[f"A{r}"] = str(a)
+                    if b is not None and not (isinstance(b, str) and b == "") and not pd.isna(b):
+                        new_sheet_cells[f"B{r}"] = str(b)
+                    if c is not None and not (isinstance(c, str) and c == "") and not pd.isna(c):
+                        new_sheet_cells[f"C{r}"] = str(c)
+                    for col, mlabel in month_cols:
+                        addr = f"{chr(64+col)}{r}"
+                        val = edited.iloc[i].get(mlabel)
+                        if val is None or (isinstance(val, str) and val == "") or pd.isna(val):
+                            continue
+                        new_sheet_cells[addr] = _to_float(val)
+            else:
+                st.info("No editable input rows detected in the template (all rows contain formulas). Use Download to edit in Excel.")
+
+        with tab_preview:
+            st.caption("Preview uses cached Excel values (no formula text). It may not update live inside the portal.")
+            st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, height=420)
+
+        with tab_costing:
+            st.caption("Costing Grid is formula-driven. Preview shows cached Excel values.")
+            ws_c = wb_values["Costing Grid"]
+            # Keep preview lightweight.
+            max_r = min(ws_c.max_row, 50)
+            max_c = min(ws_c.max_column, 20)
+            data = []
+            for r in range(1, max_r + 1):
+                data.append([ws_c.cell(r, c).value for c in range(1, max_c + 1)])
+            st.dataframe(pd.DataFrame(data), use_container_width=True, height=420)
 
         out = dict(cells)
         out["Month Wise Sales Qty"] = new_sheet_cells
