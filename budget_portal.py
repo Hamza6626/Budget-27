@@ -87,6 +87,11 @@ REMOVED_DEPARTMENTS = {
     "R61 OPERATIONS",
 }
 
+MASTER_DOMAIN_NAME = "Hamza Zahid"
+DOMAINS_XLSX = Path(__file__).with_name("Domains.xlsx")
+DOMAINS_CSV = Path(__file__).with_name("Domains.csv")
+DOMAINS_DIR = Path(__file__).with_name("Domains")
+
 DEFAULT_DEPARTMENT_DOMAINS = {
     "ACCOUNTS": "Umer Malik",
     "AUDIT": "Usman BK",
@@ -114,32 +119,99 @@ DEFAULT_DEPARTMENT_DOMAINS = {
 }
 
 
+def _normalize_domain(value: str) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def _load_domains_from_table(df: pd.DataFrame) -> dict[str, str]:
+    if df is None or df.empty:
+        return {}
+
+    cols = {c: str(c).strip().lower() for c in df.columns}
+    dept_col = next((c for c, v in cols.items() if v in {"dept", "department"}), None)
+    dom_col = next((c for c, v in cols.items() if v in {"domain"}), None)
+    if not dept_col or not dom_col:
+        return {}
+
+    mapping: dict[str, str] = {}
+    for _, row in df.iterrows():
+        dept = normalize_name(str(row.get(dept_col, "")))
+        dom = _normalize_domain(str(row.get(dom_col, "")))
+        if not dept or not dom:
+            continue
+        if dept in REMOVED_DEPARTMENTS:
+            continue
+        mapping[dept] = dom
+    return mapping
+
+
+def _load_domains_from_filesystem() -> dict[str, str]:
+    # Preferred: a file shipped with the app repo.
+    paths: list[Path] = []
+    if DOMAINS_DIR.exists() and DOMAINS_DIR.is_dir():
+        for p in sorted(DOMAINS_DIR.iterdir()):
+            if p.suffix.lower() in {".xlsx", ".csv"}:
+                paths.append(p)
+    for p in [DOMAINS_XLSX, DOMAINS_CSV]:
+        if p.exists():
+            paths.append(p)
+
+    for p in paths:
+        try:
+            if p.suffix.lower() == ".csv":
+                df = pd.read_csv(p)
+            elif p.suffix.lower() == ".xlsx":
+                df = pd.read_excel(p)
+            else:
+                continue
+        except Exception:
+            continue
+
+        mapping = _load_domains_from_table(df)
+        if mapping:
+            return mapping
+
+    return {}
+
+
 def load_department_domains() -> dict[str, str]:
     """Returns a mapping of DEPARTMENT -> DOMAIN.
 
-    Optional override via Streamlit Secrets:
-      [DEPARTMENT_DOMAINS]
-      ACCOUNTS = "Umer Malik"
-      ...
+    Load order:
+    1) Repo file(s): Domains.xlsx / Domains.csv / Domains/*
+    2) Streamlit Secrets: DEPARTMENT_DOMAINS
+    3) Built-in defaults
     """
-    mapping: dict[str, str] = {}
-    try:
-        raw = st.secrets.get("DEPARTMENT_DOMAINS", {})
-        raw_items = dict(raw).items()
-    except Exception:
-        raw_items = []
+    mapping = _load_domains_from_filesystem()
 
-    for dept, dom in raw_items:
-        d = normalize_name(str(dept))
-        v = str(dom).strip()
-        if d and v:
-            mapping[d] = v
+    if not mapping:
+        try:
+            raw = st.secrets.get("DEPARTMENT_DOMAINS", {})
+            raw_items = dict(raw).items()
+        except Exception:
+            raw_items = []
+
+        for dept, dom in raw_items:
+            d = normalize_name(str(dept))
+            v = _normalize_domain(str(dom))
+            if d and v and d not in REMOVED_DEPARTMENTS:
+                mapping[d] = v
 
     if not mapping:
         for dept, dom in DEFAULT_DEPARTMENT_DOMAINS.items():
-            mapping[normalize_name(dept)] = str(dom).strip()
+            d = normalize_name(dept)
+            v = _normalize_domain(dom)
+            if d and v and d not in REMOVED_DEPARTMENTS:
+                mapping[d] = v
 
-    # Ensure the Supply Chain segments inherit the Supply Chain domain.
+    # Derive Supply Chain domain from the segments if the file doesn't include SUPPLY CHAIN row.
+    if SUPPLY_CHAIN_DOMAIN not in mapping:
+        seg_domains = {_normalize_domain(mapping.get(seg, "")) for seg in SUPPLY_CHAIN_SEGMENTS}
+        seg_domains = {d for d in seg_domains if d}
+        if len(seg_domains) == 1:
+            mapping[SUPPLY_CHAIN_DOMAIN] = next(iter(seg_domains))
+
+    # Ensure segments inherit Supply Chain domain if available.
     sc_dom = mapping.get(SUPPLY_CHAIN_DOMAIN)
     if sc_dom:
         for seg in SUPPLY_CHAIN_SEGMENTS:
@@ -1246,13 +1318,17 @@ def login_view(auth_map: dict, master_pw: str) -> None:
 
     departments = login_domains(auth_map)
     dept_domains = load_department_domains()
-    domain_options = sorted(
-        {
+    domain_options = sorted({
+        *{
             department_domain_for_login(dept_domains, d)
             for d in departments
             if department_domain_for_login(dept_domains, d)
-        }
-    )
+        },
+        MASTER_DOMAIN_NAME,
+    })
+    domain_options = [d for d in domain_options if d]
+    if not domain_options:
+        domain_options = [MASTER_DOMAIN_NAME]
 
     outer = st.container()
     with outer:
@@ -1272,7 +1348,15 @@ def login_view(auth_map: dict, master_pw: str) -> None:
                         if department_domain_for_login(dept_domains, d) == selected_domain
                     ]
 
-                    login_as = st.selectbox("Login As", options=["MASTER"] + visible_departments)
+                    login_options = visible_departments
+                    if selected_domain == MASTER_DOMAIN_NAME:
+                        login_options = ["MASTER"] + login_options
+
+                    if not login_options:
+                        st.warning("No departments found under this domain.")
+                        return
+
+                    login_as = st.selectbox("Login As", options=login_options)
                     pw = st.text_input("Password", type="password")
                     submit = st.form_submit_button("Login", use_container_width=True)
 
