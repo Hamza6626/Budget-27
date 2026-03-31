@@ -1340,25 +1340,37 @@ def login_view(auth_map: dict, master_pw: str) -> None:
                 card = st.container()
             with card:
                 st.markdown("### Sign in")
-                with st.form("login_form", clear_on_submit=False):
-                    selected_domain = st.selectbox("Domain", options=domain_options)
-                    visible_departments = [
-                        d
-                        for d in departments
-                        if department_domain_for_login(dept_domains, d) == selected_domain
-                    ]
+                selected_domain = st.selectbox(
+                    "Domain",
+                    options=domain_options,
+                    key="login_selected_domain",
+                )
+                last_domain = st.session_state.get("login_last_domain")
+                if last_domain != selected_domain:
+                    st.session_state["login_last_domain"] = selected_domain
+                    st.session_state.pop("login_as", None)
 
-                    login_options = visible_departments
-                    if selected_domain == MASTER_DOMAIN_NAME:
-                        login_options = ["MASTER"] + login_options
+                visible_departments = [
+                    d
+                    for d in departments
+                    if department_domain_for_login(dept_domains, d) == selected_domain
+                ]
 
-                    if not login_options:
-                        st.warning("No departments found under this domain.")
-                        return
+                login_options = visible_departments
+                if selected_domain == MASTER_DOMAIN_NAME:
+                    login_options = ["MASTER"] + login_options
 
-                    login_as = st.selectbox("Login As", options=login_options)
-                    pw = st.text_input("Password", type="password")
-                    submit = st.form_submit_button("Login", use_container_width=True)
+                if not login_options:
+                    st.warning("No departments found under this domain.")
+                    return
+
+                login_as = st.selectbox(
+                    "Login As",
+                    options=login_options,
+                    key="login_as",
+                )
+                pw = st.text_input("Password", type="password", key="login_pw")
+                submit = st.button("Login", use_container_width=True)
 
     if not submit:
         return
