@@ -47,6 +47,10 @@ MONTHS = [
     "Jul-26", "Aug-26", "Sep-26", "Oct-26", "Nov-26", "Dec-26",
     "Jan-27", "Feb-27", "Mar-27", "Apr-27", "May-27", "Jun-27",
 ]
+
+
+def _month_number_column_config(step: float = 1.0, fmt: str = "%.2f") -> dict:
+    return {m: st.column_config.NumberColumn(m, step=step, format=fmt) for m in MONTHS}
 SECTION_TEMPLATES = [
     ("1. TRAINING & DEVELOPMENT", [("Employee 1", "units_rate"), ("Employee 2", "units_rate"), ("Employee 3", "units_rate")]),
     ("2. SOFTWARE & LICENSES", [("Platform A", "units_rate"), ("Platform B", "units_rate"), ("Platform C", "units_rate")]),
@@ -1594,6 +1598,7 @@ def render_department_form(department: str, payload: dict, edit_locked: bool) ->
                         index=TRAVEL_COST_KEYS,
                         columns=MONTHS,
                     )
+                    breakdown_df = breakdown_df.astype(float)
 
                     if edit_locked:
                         st.dataframe(breakdown_df, use_container_width=True)
@@ -1603,6 +1608,7 @@ def render_department_form(department: str, payload: dict, edit_locked: bool) ->
                             key=f"tb_{department}_{item_id}",
                             use_container_width=True,
                             num_rows="fixed",
+                            column_config=_month_number_column_config(step=0.01),
                         )
                         for k in TRAVEL_COST_KEYS:
                             item["travel_breakdown"][k] = _editor_to_month_map(edited_tb, k)
@@ -1619,6 +1625,7 @@ def render_department_form(department: str, payload: dict, edit_locked: bool) ->
                             index=["Amount"],
                             columns=MONTHS,
                         )
+                        amount_df = amount_df.astype(float)
                         if edit_locked:
                             st.dataframe(amount_df, use_container_width=True)
                         else:
@@ -1627,6 +1634,7 @@ def render_department_form(department: str, payload: dict, edit_locked: bool) ->
                                 key=f"amt_{department}_{item_id}",
                                 use_container_width=True,
                                 num_rows="fixed",
+                                column_config=_month_number_column_config(step=0.01),
                             )
                             item["amount"] = _editor_to_month_map(edited_amount, "Amount")
                     else:
@@ -1638,6 +1646,7 @@ def render_department_form(department: str, payload: dict, edit_locked: bool) ->
                             index=["Units", "Rate"],
                             columns=MONTHS,
                         )
+                        input_df = input_df.astype(float)
                         if edit_locked:
                             st.dataframe(input_df, use_container_width=True)
                         else:
@@ -1646,6 +1655,7 @@ def render_department_form(department: str, payload: dict, edit_locked: bool) ->
                                 key=f"ur_{department}_{item_id}",
                                 use_container_width=True,
                                 num_rows="fixed",
+                                column_config=_month_number_column_config(step=0.01),
                             )
                             item["units"] = _editor_to_month_map(edited_ur, "Units")
                             item["rate"] = _editor_to_month_map(edited_ur, "Rate")
@@ -1669,6 +1679,7 @@ def render_department_form(department: str, payload: dict, edit_locked: bool) ->
                             index=["Expected Return"],
                             columns=MONTHS,
                         )
+                        benefit_df = benefit_df.astype(float)
                         if edit_locked:
                             st.dataframe(benefit_df, use_container_width=True)
                         else:
@@ -1677,6 +1688,7 @@ def render_department_form(department: str, payload: dict, edit_locked: bool) ->
                                 key=f"benefit_{department}_{item_id}",
                                 use_container_width=True,
                                 num_rows="fixed",
+                                column_config=_month_number_column_config(step=0.01),
                             )
                             item["benefit"] = _editor_to_month_map(edited_benefit, "Expected Return")
 
