@@ -1849,6 +1849,11 @@ def app_view(auth_map: dict, master_pw: str) -> None:
             dept_link = department_sheet_link(active_dept) if active_dept else ""
             if dept_link:
                 st.link_button("Open Department sheet (OneDrive)", dept_link)
+            elif normalize_name(str(active_dept or "")) == normalize_name(HUMAN_RESOURCES_DEPT):
+                st.info(
+                    "Human Resources OneDrive link not configured. "
+                    f"Add `{HUMAN_RESOURCES_SHEET_LINK_SECRET_KEY}` in Streamlit Cloud Secrets."
+                )
             if edit_locked:
                 st.warning("Editing is locked")
             if view_locked:
@@ -1925,6 +1930,11 @@ def app_view(auth_map: dict, master_pw: str) -> None:
         dept_link = department_sheet_link(dept)
         if dept_link:
             st.link_button(f"Open {dept} sheet (OneDrive)", dept_link)
+        elif normalize_name(dept) == normalize_name(HUMAN_RESOURCES_DEPT):
+            st.warning(
+                "HR sheet link not configured. "
+                f"Add `{HUMAN_RESOURCES_SHEET_LINK_SECRET_KEY}` in Streamlit Cloud Secrets."
+            )
 
         current_payload = render_department_form(dept, current_payload, edit_locked=edit_locked)
         st.session_state[work_key] = current_payload
