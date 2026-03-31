@@ -253,9 +253,26 @@ def production_departments(dept_domains: dict[str, str], auth_map: dict) -> list
 
 def production_sheet_link() -> str:
     try:
-        link = str(st.secrets.get(PRODUCTION_SHEET_LINK_SECRET_KEY, "")).strip()
-        if link and "..." not in link:
-            return link
+        raw = st.secrets.get(PRODUCTION_SHEET_LINK_SECRET_KEY, "")
+
+        # Preferred: a plain string at the TOML root.
+        if isinstance(raw, str):
+            link = raw.strip()
+            if link and "..." not in link:
+                return link
+
+        # Also accept a TOML table like:
+        # [PRODUCTION_SHEET_LINK]
+        # "Production.xlsx" = "https://..."
+        if isinstance(raw, dict):
+            # Try common key first, else fall back to first string value.
+            for k in ["Production.xlsx", "production.xlsx", "link"]:
+                v = raw.get(k)
+                if isinstance(v, str) and v.strip() and "..." not in v:
+                    return v.strip()
+            for v in raw.values():
+                if isinstance(v, str) and v.strip() and "..." not in v:
+                    return v.strip()
 
         # Back-compat: allow storing this link inside the same dict as MKT links.
         mkt_links = st.secrets.get(MKT_SHEETS_LINKS_SECRET_KEY, {})
