@@ -91,6 +91,7 @@ HUMAN_RESOURCES_SHEET_LINK_SECRET_KEY = "HUMAN_RESOURCES_SHEET_LINK"
 
 MARKETING_DEPT = "MARKETING & MERCHANDIZING"
 PPC_DEPT = "PPC & WIP"
+MIS_IT_DEPT = "MIS & IT"
 
 _HERE = Path(__file__).resolve().parent
 MKT_TEMPLATES_DIR = (_HERE / "MKT") if (_HERE / "MKT").exists() else (_HERE.parent / "MKT")
@@ -106,6 +107,15 @@ MKT_TEMPLATE_FILES = {
 }
 
 MKT_SHEETS_LINKS_SECRET_KEY = "MKT_SHEETS_LINKS"
+
+IT_TEMPLATE_FILES = {
+    "MG - IT EXPENSES.xlsx": {
+        "title": "MG - IT EXPENSES",
+        "shared": False,
+    },
+}
+
+IT_SHEETS_LINKS_SECRET_KEY = "IT_SHEETS_LINKS"
 
 REMOVED_DEPARTMENTS = {
     "R61 OPERATIONS",
@@ -903,6 +913,36 @@ def render_department_own_sheet_panel(dept: str, edit_locked: bool) -> None:
         st.markdown(link)
 
 
+def can_access_it_sheet(role: str, dept: str | None, doc_file: str) -> bool:
+    if role == "master":
+        return True
+    if not dept:
+        return False
+    if doc_file not in IT_TEMPLATE_FILES:
+        return False
+    return normalize_name(dept) == normalize_name(MIS_IT_DEPT)
+
+
+def get_it_sheet_link(doc_file: str) -> str:
+    """Fetch a OneDrive/SharePoint web link for IT sheets from Streamlit Secrets.
+
+    Expected secrets shape:
+      [IT_SHEETS_LINKS]
+      "MG - IT EXPENSES.xlsx" = "https://.../MG%20-%20IT%20EXPENSES.xlsx?web=1"
+    """
+    try:
+        raw = st.secrets.get(IT_SHEETS_LINKS_SECRET_KEY, {})
+        items = dict(raw).items()
+    except Exception:
+        items = []
+
+    wanted = doc_file.strip().lower()
+    for k, v in items:
+        if str(k).strip().lower() == wanted:
+            return str(v).strip()
+    return ""
+
+
 def render_shared_sheets_panel(edit_locked: bool, view_locked: bool) -> None:
     role = st.session_state.role
     dept = st.session_state.department
@@ -916,7 +956,11 @@ def render_shared_sheets_panel(edit_locked: bool, view_locked: bool) -> None:
         f for f in MKT_TEMPLATE_FILES.keys()
         if can_access_shared_sheet(role, dept, dept_domain, f)
     ]
-    if not visible_files:
+    visible_it_files = [
+        f for f in IT_TEMPLATE_FILES.keys()
+        if can_access_it_sheet(role, dept, f)
+    ]
+    if not visible_files and not visible_it_files:
         return
 
     # Link-only mode: open the original files in OneDrive/SharePoint (formats & formulas unchanged).
@@ -931,6 +975,26 @@ def render_shared_sheets_panel(edit_locked: bool, view_locked: bool) -> None:
                 st.error("OneDrive link not configured. Add it in Streamlit Secrets under [MKT_SHEETS_LINKS].")
                 st.code(
                     """[MKT_SHEETS_LINKS]\n\"Sales Plan.xlsx\" = \"https://.../Sales%20Plan.xlsx?web=1\"\n\"Working Capital.xlsx\" = \"https://.../Working%20Capital.xlsx?web=1\"\n""",
+                    language="toml",
+                )
+                continue
+
+            if edit_locked and role != "master":
+                st.info("Note: Department editing is locked in the portal. The Excel file itself remains editable in OneDrive based on its permissions.")
+
+            st.link_button(f"Open {title} in OneDrive", url)
+            st.markdown(url)
+
+    for doc_file in visible_it_files:
+        cfg = IT_TEMPLATE_FILES[doc_file]
+        title = cfg.get("title", doc_file)
+        url = get_it_sheet_link(doc_file)
+
+        with st.expander(f"{title}", expanded=False):
+            if not url:
+                st.error("OneDrive link not configured. Add it in Streamlit Secrets under [IT_SHEETS_LINKS].")
+                st.code(
+                    """[IT_SHEETS_LINKS]\n\"MG - IT EXPENSES.xlsx\" = \"https://.../MG%20-%20IT%20EXPENSES.xlsx?web=1\"\n""",
                     language="toml",
                 )
                 continue
