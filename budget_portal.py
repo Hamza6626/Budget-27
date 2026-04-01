@@ -479,7 +479,8 @@ def default_app_settings() -> dict:
 
 def normalize_name(name: str) -> str:
     import re
-    return re.sub(r"[^A-Z0-9 ]", "", name.strip().upper())
+    cleaned = re.sub(r"[^A-Z0-9 ]", "", name.strip().upper())
+    return re.sub(r" +", " ", cleaned).strip()
 
 
 def _get_logo_source() -> str | Path | None:
