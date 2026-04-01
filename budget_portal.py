@@ -855,7 +855,12 @@ def can_access_shared_sheet(role: str, dept: str | None, dept_domain: str | None
 
     cfg = MKT_TEMPLATE_FILES[doc_file]
     if not cfg.get("shared", False):
-        return dept == MARKETING_DEPT
+        # Sales Plan: Marketing + all Supply Chain departments/segments
+        if dept == MARKETING_DEPT:
+            return True
+        if dept == SUPPLY_CHAIN_DOMAIN or dept in SUPPLY_CHAIN_SEGMENTS:
+            return True
+        return False
 
     # Working Capital: Marketing, PPC & WIP, Supply Chain (all segments).
     if dept == MARKETING_DEPT or dept == PPC_DEPT:
