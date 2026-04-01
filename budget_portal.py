@@ -478,7 +478,8 @@ def default_app_settings() -> dict:
 
 
 def normalize_name(name: str) -> str:
-    return name.strip().upper()
+    import re
+    return re.sub(r"[^A-Z0-9 ]", "", name.strip().upper())
 
 
 def _get_logo_source() -> str | Path | None:
@@ -882,6 +883,18 @@ def get_mkt_sheet_link(doc_file: str) -> str:
         if str(k).strip().lower() == wanted:
             return str(v).strip()
     return ""
+
+
+def render_department_own_sheet_panel(dept: str, edit_locked: bool) -> None:
+    """Show the department's own OneDrive Excel file as an expander panel (same style as MKT sheets)."""
+    link = department_sheet_link(dept)
+    if not link:
+        return
+    with st.expander(f"{dept} Excel (OneDrive)", expanded=False):
+        if edit_locked:
+            st.info("Department editing is locked in the portal. The Excel file itself remains editable in OneDrive based on its permissions.")
+        st.link_button(f"Open {dept}.xlsx in OneDrive", link)
+        st.markdown(link)
 
 
 def render_shared_sheets_panel(edit_locked: bool, view_locked: bool) -> None:
@@ -2016,17 +2029,12 @@ def app_view(auth_map: dict, master_pw: str) -> None:
                 with st.expander("Debug: why link not found?", expanded=False):
                     st.write(production_sheet_link_diagnostics())
 
-        dept_link = department_sheet_link(dept)
-        if dept_link:
-            st.link_button(f"Open {dept} sheet (OneDrive)", dept_link)
-        elif normalize_name(dept) == normalize_name(HUMAN_RESOURCES_DEPT):
-            st.warning(
-                "HR sheet link not configured. "
-                f"Add `{HUMAN_RESOURCES_SHEET_LINK_SECRET_KEY}` in Streamlit Secrets, or add 'HR.xlsx' under [MKT_SHEETS_LINKS]."
-            )
-
         current_payload = render_department_form(dept, current_payload, edit_locked=edit_locked)
         st.session_state[work_key] = current_payload
+
+        # Department's own OneDrive Excel panel (all depts except Production)
+        if st.session_state.get("department_domain") != PRODUCTION_DOMAIN:
+            render_department_own_sheet_panel(dept, edit_locked=edit_locked)
 
         # Marketing Excel heads (treated like other heads)
         render_shared_sheets_panel(edit_locked=edit_locked, view_locked=view_locked)
