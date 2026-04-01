@@ -1542,7 +1542,7 @@ def render_department_form(department: str, payload: dict, edit_locked: bool) ->
     to_delete = []
 
     for section in SECTION_NAMES:
-        with st.expander(section, expanded=False):
+        with st.expander(section, expanded=False, key=f"exp_{department}_{section}"):
             section_items = payload["sections"].setdefault(section, [])
 
             add_col, _ = st.columns([1, 3])
@@ -1603,8 +1603,11 @@ def render_department_form(department: str, payload: dict, edit_locked: bool) ->
                     if edit_locked:
                         st.dataframe(breakdown_df, use_container_width=True)
                     else:
+                        _tb_stable = f"stable_tb_{department}_{item_id}"
+                        if _tb_stable not in st.session_state:
+                            st.session_state[_tb_stable] = breakdown_df
                         edited_tb = st.data_editor(
-                            breakdown_df,
+                            st.session_state[_tb_stable],
                             key=f"tb_{department}_{item_id}",
                             use_container_width=True,
                             num_rows="fixed",
@@ -1629,8 +1632,11 @@ def render_department_form(department: str, payload: dict, edit_locked: bool) ->
                         if edit_locked:
                             st.dataframe(amount_df, use_container_width=True)
                         else:
+                            _amt_stable = f"stable_amt_{department}_{item_id}"
+                            if _amt_stable not in st.session_state:
+                                st.session_state[_amt_stable] = amount_df
                             edited_amount = st.data_editor(
-                                amount_df,
+                                st.session_state[_amt_stable],
                                 key=f"amt_{department}_{item_id}",
                                 use_container_width=True,
                                 num_rows="fixed",
@@ -1650,8 +1656,11 @@ def render_department_form(department: str, payload: dict, edit_locked: bool) ->
                         if edit_locked:
                             st.dataframe(input_df, use_container_width=True)
                         else:
+                            _ur_stable = f"stable_ur_{department}_{item_id}"
+                            if _ur_stable not in st.session_state:
+                                st.session_state[_ur_stable] = input_df
                             edited_ur = st.data_editor(
-                                input_df,
+                                st.session_state[_ur_stable],
                                 key=f"ur_{department}_{item_id}",
                                 use_container_width=True,
                                 num_rows="fixed",
@@ -1673,7 +1682,7 @@ def render_department_form(department: str, payload: dict, edit_locked: bool) ->
                 )
 
                 if is_travel_section(section):
-                    with st.expander("ROI & Supporting Docs", expanded=True):
+                    with st.expander("ROI & Supporting Docs", expanded=True, key=f"roi_exp_{department}_{item_id}"):
                         benefit_df = pd.DataFrame(
                             [[_to_float(item["benefit"].get(m, 0.0)) for m in MONTHS]],
                             index=["Expected Return"],
@@ -1683,8 +1692,11 @@ def render_department_form(department: str, payload: dict, edit_locked: bool) ->
                         if edit_locked:
                             st.dataframe(benefit_df, use_container_width=True)
                         else:
+                            _ben_stable = f"stable_benefit_{department}_{item_id}"
+                            if _ben_stable not in st.session_state:
+                                st.session_state[_ben_stable] = benefit_df
                             edited_benefit = st.data_editor(
-                                benefit_df,
+                                st.session_state[_ben_stable],
                                 key=f"benefit_{department}_{item_id}",
                                 use_container_width=True,
                                 num_rows="fixed",
