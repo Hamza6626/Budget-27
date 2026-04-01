@@ -239,6 +239,15 @@ def load_department_domains() -> dict[str, str]:
             if d and v and d not in REMOVED_DEPARTMENTS:
                 mapping[d] = v
 
+    # Always fill any missing departments from built-in defaults.
+    # This ensures new departments (e.g., CIVIL) still get a domain even when
+    # Domains.xlsx exists but doesn't include them yet.
+    for dept, dom in DEFAULT_DEPARTMENT_DOMAINS.items():
+        d = normalize_name(dept)
+        v = _normalize_domain(dom)
+        if d and v and d not in REMOVED_DEPARTMENTS:
+            mapping.setdefault(d, v)
+
     # Derive Supply Chain domain from the segments if the file doesn't include SUPPLY CHAIN row.
     if SUPPLY_CHAIN_DOMAIN not in mapping:
         seg_domains = {_normalize_domain(mapping.get(seg, "")) for seg in SUPPLY_CHAIN_SEGMENTS}
