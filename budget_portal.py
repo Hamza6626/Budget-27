@@ -2035,6 +2035,10 @@ def app_view(auth_map: dict, master_pw: str) -> None:
                 with st.expander("Debug: why link not found?", expanded=False):
                     st.write(production_sheet_link_diagnostics())
 
+        # Show shared sheets (Sales Plan, Working Capital) above the form for Supply Chain
+        if st.session_state.get("department_domain") == SUPPLY_CHAIN_DOMAIN:
+            render_shared_sheets_panel(edit_locked=edit_locked, view_locked=view_locked)
+
         current_payload = render_department_form(dept, current_payload, edit_locked=edit_locked)
         st.session_state[work_key] = current_payload
 
@@ -2042,8 +2046,9 @@ def app_view(auth_map: dict, master_pw: str) -> None:
         if st.session_state.get("department_domain") != PRODUCTION_DOMAIN:
             render_department_own_sheet_panel(dept, edit_locked=edit_locked)
 
-        # Marketing Excel heads (treated like other heads)
-        render_shared_sheets_panel(edit_locked=edit_locked, view_locked=view_locked)
+        # Marketing Excel heads (treated like other heads) - skip Supply Chain (already shown above)
+        if st.session_state.get("department_domain") != SUPPLY_CHAIN_DOMAIN:
+            render_shared_sheets_panel(edit_locked=edit_locked, view_locked=view_locked)
 
         col1, col2 = st.columns([1, 1])
         with col1:
