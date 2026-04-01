@@ -130,6 +130,7 @@ DEFAULT_DEPARTMENT_DOMAINS = {
     "ACCOUNTS": "Umer Malik",
     "AUDIT": "Usman BK",
     "BUSINESS AFFAIRS, SUSTAINABILITY, CSR": "Kehkeshan",
+    "CIVIL": "Ahsan Shah",
     "PD & SAMPLING": "Alaoudin",
     "MARKETING & MERCHANDIZING": "Naqeeb",
     "RESEARCH & DESIGN": "Naqeeb",

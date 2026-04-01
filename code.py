@@ -17,6 +17,7 @@ DEPARTMENTS = [
     "ACCOUNTS",
     "AUDIT",
     "BUSINESS AFFAIRS, SUSTAINABILITY, CSR",
+    "CIVIL",
     "PD & SAMPLING",
     "MARKETING & MERCHANDIZING",
     "RESEARCH & DESIGN",
@@ -46,6 +47,8 @@ DEPARTMENTS = [
 # Keep sheet names unchanged; this is only written into the confidential CSV output.
 DEPT_ONEDRIVE_LINKS: dict[str, str] = {
     "HUMAN RESOURCES": "https://mgapparel-my.sharepoint.com/personal/hamza_zahid_mgapparel_com/Documents/Desktop/Budget%20Mails/HR,%20Admin%20&%20Compliance/HR/HR.xlsx?web=1",
+    "BUSINESS AFFAIRS, SUSTAINABILITY, CSR": "https://mgapparel-my.sharepoint.com/personal/hamza_zahid_mgapparel_com/Documents/Desktop/Budget%20Mails/CSR,%20Sustainability%20&%20BA/CSR,%20Sustainability%20&%20BA.xlsx?web=1",
+    "CIVIL": "https://mgapparel-my.sharepoint.com/personal/hamza_zahid_mgapparel_com/Documents/Desktop/Budget%20Mails/Civil/Civil.xlsx?web=1",
 }
 
 
