@@ -875,19 +875,20 @@ def can_access_shared_sheet(role: str, dept: str | None, dept_domain: str | None
     if doc_file not in MKT_TEMPLATE_FILES:
         return False
 
+    dept_norm = normalize_name(dept)
     cfg = MKT_TEMPLATE_FILES[doc_file]
     if not cfg.get("shared", False):
         # Sales Plan: Marketing + all Supply Chain departments/segments
-        if dept == MARKETING_DEPT:
+        if dept_norm == normalize_name(MARKETING_DEPT):
             return True
-        if dept == SUPPLY_CHAIN_DOMAIN or dept in SUPPLY_CHAIN_SEGMENTS:
+        if dept_norm == normalize_name(SUPPLY_CHAIN_DOMAIN) or dept in SUPPLY_CHAIN_SEGMENTS:
             return True
         return False
 
     # Working Capital: Marketing, PPC & WIP, Supply Chain (all segments).
-    if dept == MARKETING_DEPT or dept == PPC_DEPT:
+    if dept_norm == normalize_name(MARKETING_DEPT) or dept_norm == normalize_name(PPC_DEPT):
         return True
-    if dept == SUPPLY_CHAIN_DOMAIN or dept in SUPPLY_CHAIN_SEGMENTS:
+    if dept_norm == normalize_name(SUPPLY_CHAIN_DOMAIN) or dept in SUPPLY_CHAIN_SEGMENTS:
         return True
     return False
 
