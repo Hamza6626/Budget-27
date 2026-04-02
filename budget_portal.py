@@ -2,8 +2,10 @@ import json
 import sqlite3
 import uuid
 import base64
+import hashlib
 import os
 import re
+import time
 import zipfile
 from datetime import datetime
 from io import BytesIO
@@ -1410,6 +1412,38 @@ def load_payload(department: str) -> dict:
     return migrate_payload(raw)
 
 
+def _payload_digest(payload: dict) -> str:
+    """Stable digest used to detect unsaved changes.
+
+    NOTE: intentionally ignores the top-level `updated_at` to avoid triggering
+    endless re-saves.
+    """
+
+    if not isinstance(payload, dict):
+        return ""
+
+    clean = dict(payload)
+    clean.pop("updated_at", None)
+    try:
+        raw = json.dumps(clean, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    except Exception:
+        raw = json.dumps(clean, default=str, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def safe_save_payload(department: str, payload: dict) -> bool:
+    """Save payload but never crash the app; return True if persisted."""
+
+    try:
+        save_payload(department, payload)
+        return True
+    except Exception as e:
+        # Show a readable message in the UI instead of losing work silently.
+        st.error("Could not save your data. Please screenshot this error and contact MIS/IT.")
+        st.caption(f"{type(e).__name__}: {str(e)[:300]}")
+        return False
+
+
 def load_all_payloads(departments: list[str]) -> dict:
     return {dept: load_payload(dept) for dept in departments}
 
@@ -2096,6 +2130,9 @@ def app_view(auth_map: dict, master_pw: str) -> None:
             st.session_state[work_key] = load_payload(dept)
 
         current_payload = st.session_state[work_key]
+        digest_key = f"persist_digest_{dept}"
+        if digest_key not in st.session_state:
+            st.session_state[digest_key] = _payload_digest(current_payload)
 
         if st.session_state.get("department_domain") == PRODUCTION_DOMAIN:
             link = production_sheet_link()
@@ -2116,6 +2153,14 @@ def app_view(auth_map: dict, master_pw: str) -> None:
         current_payload = render_department_form(dept, current_payload, edit_locked=edit_locked)
         st.session_state[work_key] = current_payload
 
+        # Autosave: persist any changes immediately so a Streamlit restart/sleep/reboot
+        # doesn't wipe in-memory edits.
+        if not edit_locked:
+            new_digest = _payload_digest(current_payload)
+            if new_digest and new_digest != st.session_state.get(digest_key, ""):
+                if safe_save_payload(dept, current_payload):
+                    st.session_state[digest_key] = new_digest
+
         # Department's own OneDrive Excel panel (all depts except Production)
         if st.session_state.get("department_domain") != PRODUCTION_DOMAIN:
             render_department_own_sheet_panel(dept, edit_locked=edit_locked)
@@ -2130,8 +2175,9 @@ def app_view(auth_map: dict, master_pw: str) -> None:
                 if edit_locked:
                     st.warning("Editing is locked. MASTER must unlock before you can save changes.")
                 else:
-                    save_payload(dept, current_payload)
-                    st.success("Department data saved.")
+                    if safe_save_payload(dept, current_payload):
+                        st.session_state[digest_key] = _payload_digest(current_payload)
+                        st.success("Department data saved.")
 
         with col2:
             xlsx = workbook_bytes({dept: current_payload}, [dept], include_summary=False)
